@@ -1,0 +1,33 @@
+# Rust
+/target
+**/*.rs.bk
+*.rlib
+*.rmeta
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# AI assistants (project-specific guidance lives in CLAUDE.md and is checked in;
+# personal scratch dirs are not)
+.claude/
+.copilot/
+.cursor/
+.aider*
+.codeium/
+.superpowers/
+.mcp/
+.mcp.json
+mcp.json
+
+# Local config
+gateway.local.toml
+*.pem
+*.key
