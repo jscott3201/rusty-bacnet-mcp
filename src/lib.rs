@@ -1,24 +1,23 @@
-//! BACnet HTTP REST API and MCP server gateway.
+//! Dedicated MCP (Model Context Protocol) server for BACnet networks.
 //!
-//! The gateway crate provides optional HTTP REST API and MCP server interfaces
-//! for BACnet networks. By default, **no HTTP or MCP dependencies are compiled**.
+//! Wraps the rusty-bacnet stack and exposes device discovery, property
+//! read/write, local-object management, and a BACnet reference knowledge
+//! base to LLM agents over MCP.
 //!
 //! # Feature flags
 //!
-//! - `http` — REST API module (`api`) with Axum routes and auth middleware
-//! - `mcp` — MCP server module (`mcp`) with tools, resources, and knowledge base
-//! - `bin` — enables both `http` and `mcp` plus the CLI binary entry point
+//! - `mcp` — MCP server module (`mcp`) plus auth middleware. Default.
+//! - `bin` — pulls in `mcp` plus the `bacnet-mcp` CLI binary entry point.
+//! - `sc` — enables BACnet/SC transport via the upstream `bacnet-transport/sc-tls`.
 //!
-//! # Always available (no web dependencies)
+//! # Always available (no MCP/web dependencies)
 //!
 //! - `config` — TOML configuration parsing and validation
 //! - `state` — shared gateway state (wraps BACnet client/server)
 //! - `builder` — constructs the BACnet stack from config
 //! - `parse` — BACnet value parsing and formatting utilities
 
-#[cfg(feature = "http")]
-pub mod api;
-#[cfg(feature = "http")]
+#[cfg(feature = "mcp")]
 pub mod auth;
 pub mod builder;
 pub mod config;
@@ -26,3 +25,5 @@ pub mod config;
 pub mod mcp;
 pub mod parse;
 pub mod state;
+#[cfg(feature = "tui")]
+pub mod tui;

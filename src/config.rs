@@ -1,22 +1,29 @@
-//! TOML configuration parsing and validation.
+//! JSON configuration parsing and validation.
+//!
+//! The project uses JSON exclusively for application config — no TOML or YAML.
+//! JSON is unambiguous, agent-friendly, and supported by every language without
+//! external tooling. (Cargo.toml is the one TOML file in the repo, mandated by
+//! the Rust ecosystem; that's outside this project's config surface.)
 
 use serde::Deserialize;
 use std::collections::HashSet;
 
 /// Top-level gateway configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct GatewayConfig {
-    /// HTTP/MCP server settings.
+    /// MCP server settings.
     #[serde(default)]
-    pub server: ServerConfig,
+    pub mcp: McpConfig,
     /// Local BACnet device identity.
     pub device: DeviceConfig,
     /// Transport configurations.
     #[serde(default)]
     pub transports: TransportsConfig,
     /// BBMD configuration (mutually exclusive with foreign_device).
+    #[serde(default)]
     pub bbmd: Option<BbmdConfig>,
     /// Foreign device registration (mutually exclusive with bbmd).
+    #[serde(default)]
     pub foreign_device: Option<ForeignDeviceConfig>,
     /// Static routing table entries.
     #[serde(default)]
@@ -26,36 +33,62 @@ pub struct GatewayConfig {
     pub objects: Vec<ObjectConfig>,
 }
 
-/// HTTP/MCP server settings.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
-    /// Bind address for the HTTP server.
-    #[serde(default = "default_bind")]
-    pub bind: String,
-    /// API key for bearer token auth. If omitted, no auth is applied.
+/// MCP server settings.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct McpConfig {
+    /// Bearer-token API key. If omitted, no auth is applied to the streamable-HTTP
+    /// transport. Stdio transport relies on transport-level identity, so auth is
+    /// not enforced there regardless of this setting.
+    #[serde(default)]
     pub api_key: Option<String>,
     /// Read-only mode. When true, all write operations (write_property,
-    /// create_object, delete_object) are rejected.
-    #[serde(default)]
+    /// create_object, delete_object, write_local_property) are rejected.
+    /// Default is `true` — operators must explicitly opt in to writes.
+    #[serde(default = "default_read_only")]
     pub read_only: bool,
+    /// Optional streamable-HTTP transport configuration. Presence of this block
+    /// is independent of the `--transport` CLI flag; when both `--transport http`
+    /// and this block are missing a bind address, startup fails.
+    #[serde(default)]
+    pub http: Option<McpHttpConfig>,
 }
 
-impl Default for ServerConfig {
+impl Default for McpConfig {
     fn default() -> Self {
         Self {
-            bind: default_bind(),
             api_key: None,
-            read_only: false,
+            read_only: default_read_only(),
+            http: None,
         }
     }
 }
 
-fn default_bind() -> String {
+fn default_read_only() -> bool {
+    true
+}
+
+/// Streamable-HTTP MCP transport configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct McpHttpConfig {
+    /// Bind address for the HTTP listener.
+    #[serde(default = "default_http_bind")]
+    pub bind: String,
+}
+
+impl Default for McpHttpConfig {
+    fn default() -> Self {
+        Self {
+            bind: default_http_bind(),
+        }
+    }
+}
+
+fn default_http_bind() -> String {
     "127.0.0.1:3000".to_string()
 }
 
 /// Local BACnet device identity.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct DeviceConfig {
     /// Device instance number (0–4194302).
     pub instance: u32,
@@ -74,18 +107,21 @@ fn default_vendor_id() -> u16 {
 }
 
 /// Transport configurations.
-#[derive(Debug, Clone, Default, Deserialize)]
+///
+/// BACnet/IP and BACnet/SC are the supported transports. MS/TP support
+/// was removed in 0.2.0 to focus the project on IP-based BACnet networks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct TransportsConfig {
     /// BACnet/IP transport.
+    #[serde(default)]
     pub bip: Option<BipConfig>,
-    /// BACnet/SC transport.
+    /// BACnet/SC transport (Hub or Node).
+    #[serde(default)]
     pub sc: Option<ScConfig>,
-    /// MS/TP transport (Linux only).
-    pub mstp: Option<MstpConfig>,
 }
 
 /// BACnet/IP transport configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BipConfig {
     /// Bind interface address.
     #[serde(default = "default_interface")]
@@ -108,105 +144,36 @@ fn default_bip_port() -> u16 {
 }
 
 /// BACnet/SC transport configuration.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// SC supports two roles:
+/// - **Node**: connects out to a remote hub (set `hub_uri`).
+/// - **Hub**: listens for incoming SC node connections (set `listen` and omit `hub_uri`).
+///
+/// `listen` and `hub_uri` are mutually exclusive — a single SC transport
+/// runs in exactly one role.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ScConfig {
-    /// WebSocket hub URI.
-    pub hub_uri: String,
-    /// TLS client certificate path.
+    /// Node mode: WebSocket URI of the remote SC hub (e.g. `wss://hub.example.com:8443`).
+    /// Omit for Hub mode.
+    #[serde(default)]
+    pub hub_uri: Option<String>,
+    /// Hub mode: bind address for incoming WebSocket connections (e.g. `0.0.0.0:8443`).
+    /// Omit for Node mode.
+    #[serde(default)]
+    pub listen: Option<String>,
+    /// TLS client/server certificate path (PEM).
     pub cert: String,
-    /// TLS private key path.
+    /// TLS private key path (PEM).
     pub key: String,
-    /// CA certificate path.
+    /// CA bundle for peer verification (PEM).
     #[serde(default)]
     pub ca: Option<String>,
     /// Network number for this transport.
     pub network_number: u16,
 }
 
-/// MS/TP transport configuration.
-#[derive(Debug, Clone, Deserialize)]
-pub struct MstpConfig {
-    /// Serial port path.
-    pub serial_port: String,
-    /// Baud rate.
-    #[serde(default = "default_baud_rate")]
-    pub baud_rate: u32,
-    /// Station address (0–254).
-    pub station_address: u8,
-    /// Max master station address.
-    #[serde(default = "default_max_master")]
-    pub max_master: u8,
-    /// Network number for this transport.
-    pub network_number: u16,
-    /// RS-485 direction control configuration (optional).
-    /// If omitted, assumes the hardware handles direction automatically
-    /// (USB RS-485 adapters, auto-direction transceivers).
-    #[serde(default)]
-    pub rs485: Option<Rs485Config>,
-}
-
-/// RS-485 direction control configuration.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "mode")]
-pub enum Rs485Config {
-    /// Kernel RS-485 mode via TIOCSRS485 ioctl (Linux only).
-    /// The kernel toggles the UART's RTS pin for direction control.
-    /// Use when DE/RE is wired to the UART's RTS pin.
-    #[serde(rename = "kernel-rts")]
-    KernelRts {
-        /// Invert RTS polarity (default: false).
-        #[serde(default)]
-        invert_rts: bool,
-        /// Delay before send in microseconds (default: 0).
-        #[serde(default)]
-        delay_before_send_us: u32,
-        /// Delay after send in microseconds (default: 0).
-        #[serde(default)]
-        delay_after_send_us: u32,
-    },
-    /// GPIO direction control via Linux GPIO character device.
-    /// Toggles a GPIO pin for DE/RE control around each transmission.
-    /// Use for RS-485 hats where DE/RE is wired to a GPIO pin.
-    #[serde(rename = "gpio")]
-    Gpio {
-        /// GPIO chip device path (default: "/dev/gpiochip0").
-        #[serde(default = "default_gpio_chip")]
-        gpio_chip: String,
-        /// GPIO line number for DE/RE control.
-        gpio_line: u32,
-        /// If true, GPIO HIGH enables transmitter (default: true).
-        /// Most RS-485 transceivers (MAX485) use active-high DE.
-        #[serde(default = "default_true")]
-        active_high: bool,
-        /// Post-TX delay in microseconds before switching to RX mode (default: 200).
-        /// Covers the time for the last byte to leave the UART shift register.
-        #[serde(default = "default_post_tx_delay")]
-        post_tx_delay_us: u64,
-    },
-}
-
-fn default_gpio_chip() -> String {
-    "/dev/gpiochip0".to_string()
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_post_tx_delay() -> u64 {
-    200
-}
-
-fn default_baud_rate() -> u32 {
-    76800
-}
-
-fn default_max_master() -> u8 {
-    127
-}
-
 /// BBMD configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BbmdConfig {
     /// Enable BBMD on the BIP transport.
     #[serde(default)]
@@ -217,7 +184,7 @@ pub struct BbmdConfig {
 }
 
 /// Foreign device registration configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForeignDeviceConfig {
     /// BBMD address to register with (IP:port).
     pub bbmd: String,
@@ -226,18 +193,19 @@ pub struct ForeignDeviceConfig {
 }
 
 /// Static route entry.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RouteConfig {
     /// Destination network number.
     pub network: u16,
-    /// Transport to route through ("bip", "sc", "mstp").
+    /// Transport to route through (`"bip"` or `"sc"`).
     pub via_transport: String,
     /// Next hop address (optional, for routed networks).
+    #[serde(default)]
     pub next_hop: Option<String>,
 }
 
 /// Pre-populated local object.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ObjectConfig {
     /// Object type name (e.g., "analog-value").
     #[serde(rename = "type")]
@@ -247,8 +215,10 @@ pub struct ObjectConfig {
     /// Object name.
     pub name: String,
     /// Engineering units (optional).
+    #[serde(default)]
     pub units: Option<String>,
     /// Number of states for multi-state objects (default: 2).
+    #[serde(default)]
     pub number_of_states: Option<u32>,
 }
 
@@ -267,9 +237,9 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl GatewayConfig {
-    /// Parse a TOML string into a GatewayConfig.
-    pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(s)
+    /// Parse a JSON string into a GatewayConfig.
+    pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
     }
 
     /// Validate the configuration.
@@ -287,7 +257,7 @@ impl GatewayConfig {
         // BBMD and foreign_device are mutually exclusive
         if self.bbmd.is_some() && self.foreign_device.is_some() {
             return Err(ConfigError {
-                message: "[bbmd] and [foreign_device] are mutually exclusive".to_string(),
+                message: "bbmd and foreign_device are mutually exclusive".to_string(),
             });
         }
 
@@ -295,17 +265,29 @@ impl GatewayConfig {
         if let Some(bbmd) = &self.bbmd {
             if bbmd.enabled && self.transports.bip.is_none() {
                 return Err(ConfigError {
-                    message: "[bbmd] requires [transports.bip] to be configured".to_string(),
+                    message: "bbmd requires transports.bip to be configured".to_string(),
                 });
             }
         }
 
-        // MS/TP only on Linux
-        #[cfg(not(target_os = "linux"))]
-        if self.transports.mstp.is_some() {
-            return Err(ConfigError {
-                message: "[transports.mstp] is only available on Linux".to_string(),
-            });
+        // SC role: Hub vs Node — `listen` and `hub_uri` are mutually exclusive,
+        // and exactly one must be set.
+        if let Some(sc) = &self.transports.sc {
+            match (sc.listen.as_ref(), sc.hub_uri.as_ref()) {
+                (Some(_), Some(_)) => {
+                    return Err(ConfigError {
+                        message:
+                            "transports.sc cannot set both `listen` (Hub) and `hub_uri` (Node)"
+                                .to_string(),
+                    });
+                }
+                (None, None) => {
+                    return Err(ConfigError {
+                        message: "transports.sc requires either `listen` (Hub mode) or `hub_uri` (Node mode)".to_string(),
+                    });
+                }
+                _ => {}
+            }
         }
 
         // Validate and check uniqueness of network numbers.
@@ -319,10 +301,6 @@ impl GatewayConfig {
                 .sc
                 .as_ref()
                 .map(|t| (t.network_number, "sc")),
-            self.transports
-                .mstp
-                .as_ref()
-                .map(|t| (t.network_number, "mstp")),
         ]
         .into_iter()
         .flatten()
@@ -348,6 +326,20 @@ impl GatewayConfig {
             }
         }
 
+        // Routes can only target known transports.
+        for route in &self.routes {
+            match route.via_transport.as_str() {
+                "bip" | "sc" => {}
+                other => {
+                    return Err(ConfigError {
+                        message: format!(
+                            "route via_transport '{other}' is unknown (must be 'bip' or 'sc')"
+                        ),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -358,48 +350,50 @@ mod tests {
 
     #[test]
     fn parse_full_config() {
-        let toml = r#"
-[server]
-bind = "0.0.0.0:3000"
-api_key = "test-key"
-
-[device]
-instance = 389001
-name = "Test Gateway"
-vendor_id = 555
-
-[transports.bip]
-interface = "0.0.0.0"
-port = 47808
-broadcast = "192.168.1.255"
-network_number = 1
-
-[transports.sc]
-hub_uri = "wss://hub.example.com"
-cert = "certs/client.pem"
-key = "certs/client.key"
-network_number = 2
-
-[[routes]]
-network = 4
-via_transport = "bip"
-next_hop = "192.168.1.100:47808"
-
-[[objects]]
-type = "analog-value"
-instance = 1
-name = "Gateway Uptime"
-units = "seconds"
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        assert_eq!(config.server.bind, "0.0.0.0:3000");
-        assert_eq!(config.server.api_key.as_deref(), Some("test-key"));
+        let json = r#"{
+            "mcp": {
+                "api_key": "test-key",
+                "read_only": false,
+                "http": { "bind": "0.0.0.0:3000" }
+            },
+            "device": {
+                "instance": 389001,
+                "name": "Test Gateway",
+                "vendor_id": 555
+            },
+            "transports": {
+                "bip": {
+                    "interface": "0.0.0.0",
+                    "port": 47808,
+                    "broadcast": "192.168.1.255",
+                    "network_number": 1
+                },
+                "sc": {
+                    "hub_uri": "wss://hub.example.com",
+                    "cert": "certs/client.pem",
+                    "key": "certs/client.key",
+                    "network_number": 2
+                }
+            },
+            "routes": [
+                { "network": 4, "via_transport": "bip", "next_hop": "192.168.1.100:47808" }
+            ],
+            "objects": [
+                { "type": "analog-value", "instance": 1, "name": "Gateway Uptime", "units": "seconds" }
+            ]
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
+        assert_eq!(config.mcp.api_key.as_deref(), Some("test-key"));
+        assert!(!config.mcp.read_only);
+        assert_eq!(
+            config.mcp.http.as_ref().map(|h| h.bind.as_str()),
+            Some("0.0.0.0:3000")
+        );
         assert_eq!(config.device.instance, 389001);
         assert_eq!(config.device.name, "Test Gateway");
         assert_eq!(config.device.vendor_id, 555);
         assert!(config.transports.bip.is_some());
         assert!(config.transports.sc.is_some());
-        assert!(config.transports.mstp.is_none());
         assert_eq!(config.routes.len(), 1);
         assert_eq!(config.routes[0].network, 4);
         assert_eq!(config.objects.len(), 1);
@@ -408,16 +402,17 @@ units = "seconds"
     }
 
     #[test]
-    fn parse_minimal_config() {
-        let toml = r#"
-[device]
-instance = 1234
-name = "Minimal"
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        assert_eq!(config.server.bind, "127.0.0.1:3000");
-        assert!(config.server.api_key.is_none());
-        assert_eq!(config.device.vendor_id, 999);
+    fn parse_minimal_config_is_read_only_by_default() {
+        let json = r#"{
+            "device": { "instance": 1234, "name": "Minimal" }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
+        assert!(config.mcp.api_key.is_none());
+        assert!(
+            config.mcp.read_only,
+            "default safety posture must be read-only"
+        );
+        assert!(config.mcp.http.is_none());
         assert!(config.transports.bip.is_none());
         assert!(config.routes.is_empty());
         assert!(config.objects.is_empty());
@@ -426,105 +421,140 @@ name = "Minimal"
 
     #[test]
     fn validate_device_instance_too_large() {
-        let toml = r#"
-[device]
-instance = 4194303
-name = "Bad"
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
+        let json = r#"{ "device": { "instance": 4194303, "name": "Bad" } }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.message.contains("4194303"));
     }
 
     #[test]
     fn validate_bbmd_and_foreign_device_mutually_exclusive() {
-        let toml = r#"
-[device]
-instance = 1
-name = "Test"
-
-[transports.bip]
-broadcast = "192.168.1.255"
-network_number = 1
-
-[bbmd]
-enabled = true
-
-[foreign_device]
-bbmd = "192.168.1.1:47808"
-ttl = 300
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "transports": {
+                "bip": { "broadcast": "192.168.1.255", "network_number": 1 }
+            },
+            "bbmd": { "enabled": true },
+            "foreign_device": { "bbmd": "192.168.1.1:47808", "ttl": 300 }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.message.contains("mutually exclusive"));
     }
 
     #[test]
     fn validate_bbmd_requires_bip() {
-        let toml = r#"
-[device]
-instance = 1
-name = "Test"
-
-[bbmd]
-enabled = true
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "bbmd": { "enabled": true }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.message.contains("requires [transports.bip]"));
+        assert!(err.message.contains("requires transports.bip"));
     }
 
     #[test]
     fn validate_duplicate_network_numbers() {
-        let toml = r#"
-[device]
-instance = 1
-name = "Test"
-
-[transports.bip]
-broadcast = "192.168.1.255"
-network_number = 1
-
-[transports.sc]
-hub_uri = "wss://hub.example.com"
-cert = "c.pem"
-key = "k.pem"
-network_number = 1
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "transports": {
+                "bip": { "broadcast": "192.168.1.255", "network_number": 1 },
+                "sc": {
+                    "hub_uri": "wss://hub.example.com",
+                    "cert": "c.pem", "key": "k.pem",
+                    "network_number": 1
+                }
+            }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.message.contains("duplicate network number"));
     }
 
     #[test]
     fn validate_network_number_zero_rejected() {
-        let toml = r#"
-[device]
-instance = 1
-name = "Test"
-
-[transports.bip]
-broadcast = "192.168.1.255"
-network_number = 0
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "transports": {
+                "bip": { "broadcast": "192.168.1.255", "network_number": 0 }
+            }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.message.contains("reserved"));
     }
 
     #[test]
     fn validate_network_number_broadcast_rejected() {
-        let toml = r#"
-[device]
-instance = 1
-name = "Test"
-
-[transports.bip]
-broadcast = "192.168.1.255"
-network_number = 65535
-"#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "transports": {
+                "bip": { "broadcast": "192.168.1.255", "network_number": 65535 }
+            }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.message.contains("reserved"));
+    }
+
+    #[test]
+    fn validate_sc_requires_hub_or_node_mode() {
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "transports": {
+                "sc": { "cert": "c.pem", "key": "k.pem", "network_number": 2 }
+            }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.message.contains("Hub mode") || err.message.contains("Node mode"));
+    }
+
+    #[test]
+    fn validate_sc_hub_and_node_mutually_exclusive() {
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "transports": {
+                "sc": {
+                    "hub_uri": "wss://hub.example.com",
+                    "listen": "0.0.0.0:8443",
+                    "cert": "c.pem", "key": "k.pem",
+                    "network_number": 2
+                }
+            }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.message.contains("Hub") && err.message.contains("Node"));
+    }
+
+    #[test]
+    fn validate_sc_hub_mode_accepted() {
+        let json = r#"{
+            "device": { "instance": 1, "name": "SC Hub Gateway" },
+            "transports": {
+                "sc": {
+                    "listen": "0.0.0.0:8443",
+                    "cert": "certs/hub.pem", "key": "certs/hub.key", "ca": "certs/ca.pem",
+                    "network_number": 2
+                }
+            }
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_unknown_route_transport_rejected() {
+        let json = r#"{
+            "device": { "instance": 1, "name": "Test" },
+            "transports": {
+                "bip": { "broadcast": "192.168.1.255", "network_number": 1 }
+            },
+            "routes": [ { "network": 5, "via_transport": "mstp" } ]
+        }"#;
+        let config = GatewayConfig::from_json(json).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.message.contains("mstp") || err.message.contains("unknown"));
     }
 }
