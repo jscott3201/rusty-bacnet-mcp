@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod objects;
 pub mod properties;
 pub mod reference;
+pub mod trend;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -151,6 +152,28 @@ impl GatewayMcp {
         params: Parameters<bulk::DeviceCapabilitiesParams>,
     ) -> Result<String, String> {
         bulk::get_device_capabilities_impl(&self.state, params.0).await
+    }
+
+    // --- Trend log tools (ReadRange-backed) ---
+
+    #[tool(
+        description = "Read TrendLog metadata in one RPM round-trip: object-name, log-enable, log-interval, buffer-size, record-count, total-record-count, log-device-object-property (the source the trend is sampling), start/stop time, logging-type, status flags, event state. Use this before calling read_trend_log to know how many records exist and how to range-select them."
+    )]
+    async fn get_trend_log_info(
+        &self,
+        params: Parameters<trend::TrendLogInfoParams>,
+    ) -> Result<String, String> {
+        trend::get_trend_log_info_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Read a window of records from a TrendLog's log-buffer via the BACnet ReadRange service. Three range modes per ASHRAE 135-2020 Clause 15.8: 'by_position' (1-based array index), 'by_sequence' (sequence number), 'by_time' ('YYYY-MM-DD HH:MM:SS'). `count` is signed — positive reads forward, negative reads backward. Records are decoded into timestamp + value + optional status flags."
+    )]
+    async fn read_trend_log(
+        &self,
+        params: Parameters<trend::ReadTrendLogParams>,
+    ) -> Result<String, String> {
+        trend::read_trend_log_impl(&self.state, params.0).await
     }
 
     // --- Local object tools ---
