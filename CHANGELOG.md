@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — Phase 2: trend-log tools (ReadRange-backed)
+
+Adds two MCP tools for working with BACnet TrendLog objects. Together they answer the agentic question "what is this trend logging, how much data does it have, and can I read a specific window?" without round-tripping through the lower-level read tools.
+
+### Added — 2 new MCP tools
+
+- **`get_trend_log_info`** — One RPM round-trip for TrendLog metadata: `object-name`, `description`, `log-enable`, `log-interval`, `buffer-size`, `record-count`, `total-record-count`, `log-device-object-property` (the data source the trend is sampling), `start-time`, `stop-time`, `logging-type`, `status-flags`, `event-state`. The first call an agent should make before reading records — answers "is this trend running and how many records exist?"
+- **`read_trend_log`** — Windowed read of a TrendLog's `log-buffer` via the BACnet **ReadRange** service (ASHRAE 135-2020 Clause 15.8). Three range modes: `by_position` (1-based array index), `by_sequence` (sequence number), `by_time` (`"YYYY-MM-DD HH:MM:SS"`). `count` is signed — positive reads forward, negative reads backward. Returns one decoded line per record: timestamp + value + optional status flags.
+
+Both tools are read-only. Like the bulk-read tools added in 0.4.0, they don't consult `WritePolicy` or append audit entries.
+
+### Added — LogRecord stream decoder
+
+`bacnet-services 0.8` returns ReadRange's `item_data` as raw bytes — there's no upstream decoder for the stream-of-LogRecord shape that `log-buffer` produces. `src/mcp/trend.rs` implements one: parses each `BACnetLogRecord` (timestamp envelope, log-datum CHOICE, optional StatusFlags) and surfaces a domain-specific `DecodedLogRecord` shape covering the 11 LogDatum variants (real, unsigned, signed, enum, boolean, bitstring, null, log-status, time-change, failure, plus a fallback for vendor-extended any-value).
+
+### Added — pre-dispatch validation
+
+`read_trend_log` parses both the object identifier and the range spec (including the datetime string for `by_time`) BEFORE touching the BACnet client. Same pattern as `read_property_multiple` — agents passing a malformed datetime get a clear "datetime missing time part" error rather than a generic "BACnet client not started".
+
+### Added — tests
+
+12 new tests bring the total to 100 passing:
+- 9 unit tests in `src/mcp/trend.rs` covering single-record decode, multi-record decode, status-flag attachment, ISO datetime parsing (full, T-separator, garbage rejection), and `RangeSpec` builder for all three modes.
+- 3 integration tests in `tests/trend_tests.rs` covering the no-client paths and the validation-precedes-transport ordering for malformed datetimes.
+
+### Changed
+
+- **`tests/mcp_tests.rs` split** — moved trend integration tests to `tests/trend_tests.rs` to keep the file under the 700 LOC cap. Future PRs that grow integration coverage should split by domain (each `tests/*.rs` is a separate cargo test crate).
+
+### Notes
+
+- BACnet TrendLog objects in real devices vary on which optional properties they expose. `get_trend_log_info` requests all 13 properties unconditionally; properties the device doesn't implement come back as `<error class=PROPERTY code=UNKNOWN_PROPERTY>` lines, which is exactly the signal an agent needs to know what's available.
+- This PR makes no changes to `WritePolicy`, the audit log, or any write tool — those landed in 0.5.0 and are unchanged here.
+
 ## [0.5.0] — Phase 2: layered safety control plane + audit log + relinquish
 
 This release lands the **write-side safety control plane** that Phase 2 was waiting on. Every write tool now consults a hot-swappable `WritePolicy` before encoding a BACnet APDU and emits one append-only `AuditEntry` (allow / deny / dry-run / error) regardless of outcome. A `dry_run` parameter lets agents pre-flight a write through the full policy + audit pipeline without touching the wire.

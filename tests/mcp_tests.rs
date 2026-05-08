@@ -679,6 +679,8 @@ async fn allow_object_types_overrides_default_allow_list() {
     assert!(err.contains("type allowlist"), "got: {err}");
 }
 
+// --- Trend logs (moved to tests/trend_tests.rs to fit the 700 LOC cap) ---
+
 // --- Reference resources ---
 
 #[test]
