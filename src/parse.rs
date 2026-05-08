@@ -355,7 +355,7 @@ pub fn construct_object(
             return Err(format!(
                 "object type '{}' is not supported for creation via the API",
                 object_type_name(obj_type),
-            ))
+            ));
         }
     }
     .map_err(|e| format!("{e}"))

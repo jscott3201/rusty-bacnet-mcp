@@ -1,14 +1,14 @@
 //! MCP server integration tests.
-//! Requires: `cargo test -p bacnet-gateway --features mcp`
+//! Requires: `cargo test -p bacnet-mcp --features mcp`
 
 #![cfg(feature = "mcp")]
 
-use bacnet_gateway::config::{DeviceConfig, GatewayConfig, ServerConfig, TransportsConfig};
-use bacnet_gateway::mcp::discovery;
-use bacnet_gateway::mcp::objects;
-use bacnet_gateway::mcp::reference;
-use bacnet_gateway::mcp::GatewayMcp;
-use bacnet_gateway::state::GatewayState;
+use bacnet_mcp::config::{DeviceConfig, GatewayConfig, McpConfig, TransportsConfig};
+use bacnet_mcp::mcp::GatewayMcp;
+use bacnet_mcp::mcp::discovery;
+use bacnet_mcp::mcp::objects;
+use bacnet_mcp::mcp::reference;
+use bacnet_mcp::state::GatewayState;
 
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::database::ObjectDatabase;
@@ -18,7 +18,11 @@ use rmcp::ServerHandler;
 
 fn test_config() -> GatewayConfig {
     GatewayConfig {
-        server: ServerConfig::default(),
+        mcp: McpConfig {
+            // Tests need writes enabled — the production default is read-only.
+            read_only: false,
+            ..McpConfig::default()
+        },
         device: DeviceConfig {
             instance: 1234,
             name: "Test Gateway".to_string(),

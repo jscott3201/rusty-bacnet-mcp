@@ -16,7 +16,7 @@ use rmcp::model::{
     ReadResourceRequestParams, ReadResourceResult, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
-use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
+use rmcp::{RoleServer, ServerHandler, tool, tool_handler, tool_router};
 
 use crate::state::GatewayState;
 
@@ -199,10 +199,20 @@ impl GatewayMcp {
                     "Device: {} (instance {})\n",
                     config.device.name, config.device.instance
                 ));
-                result.push_str(&format!("Server bind: {}\n", config.server.bind));
+                result.push_str(&format!(
+                    "Mode: {}\n",
+                    if config.mcp.read_only {
+                        "read-only"
+                    } else {
+                        "writable"
+                    }
+                ));
+                if let Some(http) = &config.mcp.http {
+                    result.push_str(&format!("HTTP transport bind: {}\n", http.bind));
+                }
                 result.push_str(&format!(
                     "Auth: {}\n",
-                    if config.server.api_key.is_some() {
+                    if config.mcp.api_key.is_some() {
                         "enabled (bearer token)"
                     } else {
                         "disabled"
@@ -215,15 +225,14 @@ impl GatewayMcp {
                     ));
                 }
                 if let Some(sc) = &config.transports.sc {
+                    let role = match (sc.listen.as_deref(), sc.hub_uri.as_deref()) {
+                        (Some(addr), _) => format!("Hub listening on {addr}"),
+                        (_, Some(uri)) => format!("Node connected to {uri}"),
+                        _ => "(unconfigured)".to_string(),
+                    };
                     result.push_str(&format!(
                         "Transport SC: {}, network {}\n",
-                        sc.hub_uri, sc.network_number
-                    ));
-                }
-                if let Some(mstp) = &config.transports.mstp {
-                    result.push_str(&format!(
-                        "Transport MS/TP: {}, station {}, network {}\n",
-                        mstp.serial_port, mstp.station_address, mstp.network_number
+                        role, sc.network_number
                     ));
                 }
                 Some(result)

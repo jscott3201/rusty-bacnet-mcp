@@ -1,63 +1,121 @@
-//! BACnet gateway binary entry point.
+//! BACnet MCP server binary entry point.
 //!
-//! Loads TOML config, applies CLI overrides, starts the BACnet stack,
-//! and serves the HTTP REST API + MCP server.
+//! Two run modes:
+//! - **daemon** (default): Loads JSON config, starts the BACnet stack, serves
+//!   MCP over stdio, streamable-HTTP, or both. Headless.
+//! - **tui**: Same BACnet stack, but a ratatui operator console replaces stdio.
+//!   Stdio MCP is unavailable in TUI mode (terminal owns stdout); HTTP MCP can
+//!   still run alongside the TUI for outside agentic clients.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
-use axum::Router;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use rmcp::ServiceExt;
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use tokio_util::sync::CancellationToken;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
-use bacnet_gateway::api::api_router;
-use bacnet_gateway::auth::bearer::BearerTokenAuth;
-use bacnet_gateway::auth::Authenticator;
-use bacnet_gateway::builder::GatewayBuilder;
-use bacnet_gateway::config::GatewayConfig;
-use bacnet_gateway::mcp::GatewayMcp;
+use bacnet_mcp::auth::Authenticator;
+use bacnet_mcp::auth::bearer::BearerTokenAuth;
+use bacnet_mcp::builder::GatewayBuilder;
+use bacnet_mcp::config::GatewayConfig;
+use bacnet_mcp::mcp::GatewayMcp;
 
-/// BACnet HTTP REST API and MCP server gateway.
+/// How the binary should run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum RunMode {
+    /// Headless daemon. Serves MCP over stdio and/or streamable-HTTP.
+    Daemon,
+    /// Interactive TUI operator console. Stdio MCP is unavailable; HTTP MCP
+    /// can still run alongside the TUI when configured.
+    Tui,
+}
+
+/// Which MCP transport(s) to expose in daemon mode.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum TransportMode {
+    /// Stdio only — JSON-RPC over stdin/stdout. Right for local agentic clients
+    /// (Claude Desktop, Claude Code) that spawn the server as a child process.
+    Stdio,
+    /// Streamable-HTTP only. Right for remote / multi-client deployments.
+    Http,
+    /// Both stdio and HTTP concurrently.
+    Both,
+}
+
+impl TransportMode {
+    fn includes_stdio(self) -> bool {
+        matches!(self, Self::Stdio | Self::Both)
+    }
+    fn includes_http(self) -> bool {
+        matches!(self, Self::Http | Self::Both)
+    }
+}
+
+/// Dedicated MCP server for BACnet building automation networks.
 #[derive(Parser)]
-#[command(name = "bacnet-gateway", about = "BACnet HTTP/MCP gateway")]
+#[command(name = "bacnet-mcp", version, about, long_about = None)]
 struct Cli {
-    /// Config file path.
-    #[arg(short, long, default_value = "gateway.toml")]
+    /// Run mode. `daemon` is headless; `tui` opens an interactive operator console.
+    #[arg(short = 'm', long, value_enum, default_value_t = RunMode::Daemon)]
+    mode: RunMode,
+
+    /// Config file path (JSON).
+    #[arg(short, long, default_value = "bacnet-mcp.json")]
     config: String,
 
-    /// Override server bind address.
-    #[arg(short, long)]
+    /// MCP transport mode (daemon mode only — ignored when --mode tui).
+    #[arg(short, long, value_enum, default_value_t = TransportMode::Stdio)]
+    transport: TransportMode,
+
+    /// Override HTTP transport bind address (only valid for http/both transports
+    /// in daemon mode, or always in tui mode if HTTP is configured).
+    #[arg(long)]
     bind: Option<String>,
 
-    /// Override API key (or set BACNET_GATEWAY_API_KEY env var).
+    /// API key for bearer-token auth on the HTTP transport.
+    /// Falls back to BACNET_MCP_API_KEY env var. No effect on stdio transport.
     #[arg(short = 'k', long)]
     api_key: Option<String>,
+
+    /// Force read-only mode regardless of config.
+    #[arg(short, long, conflicts_with = "writes_enabled")]
+    read_only: bool,
+
+    /// Force write operations enabled regardless of config. Use with care —
+    /// writes to building systems can affect occupants.
+    #[arg(long)]
+    writes_enabled: bool,
 
     /// Increase log verbosity (-v info, -vv debug, -vvv trace).
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// Suppress all output except errors.
-    #[arg(short, long)]
+    /// Suppress all output except errors. Daemon mode only — TUI mode always
+    /// captures logs into the in-app log pane regardless.
+    #[arg(short, long, conflicts_with = "verbose")]
     quiet: bool,
 
-    /// Disable MCP endpoint.
+    /// Log file path. Required when transport includes stdio so logs don't
+    /// collide with JSON-RPC framing on stdout. Defaults to stderr otherwise,
+    /// or `$TMPDIR/bacnet-mcp-<pid>.log` in tui mode.
     #[arg(long)]
-    no_mcp: bool,
+    log_file: Option<PathBuf>,
 
-    /// Disable REST API (MCP only).
+    /// Disable HTTP MCP transport in tui mode (the TUI runs alone with no
+    /// outside agentic surface). Ignored in daemon mode.
     #[arg(long)]
-    no_api: bool,
-
-    /// Read-only mode — disable all write operations.
-    #[arg(long)]
-    read_only: bool,
+    no_http: bool,
 
     /// Print resolved config and exit.
     #[arg(long)]
@@ -68,60 +126,9 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Initialize tracing.
-    let level = if cli.quiet {
-        "error"
-    } else {
-        match cli.verbose {
-            0 => "warn",
-            1 => "info",
-            2 => "debug",
-            _ => "trace",
-        }
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level)),
-        )
-        .init();
+    let mut config = load_config(&cli.config)?;
+    apply_cli_overrides(&mut config, &cli);
 
-    // Load config.
-    let config_text = match std::fs::read_to_string(&cli.config) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("Config file '{}' not found.", cli.config);
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Error reading config file '{}': {e}", cli.config);
-            std::process::exit(1);
-        }
-    };
-
-    let mut config = GatewayConfig::from_toml(&config_text)?;
-
-    // Apply CLI overrides.
-    if let Some(bind) = &cli.bind {
-        config.server.bind = bind.clone();
-    }
-    if let Some(key) = &cli.api_key {
-        config.server.api_key = Some(key.clone());
-    }
-    if config.server.api_key.is_none() {
-        if let Ok(key) = std::env::var("BACNET_GATEWAY_API_KEY") {
-            config.server.api_key = Some(key);
-        }
-    }
-    if cli.read_only {
-        config.server.read_only = true;
-    }
-
-    // Validate.
-    if cli.no_mcp && cli.no_api {
-        eprintln!("Error: --no-mcp and --no-api cannot both be set.");
-        std::process::exit(1);
-    }
     config.validate().map_err(|e| {
         eprintln!("Config validation error: {e}");
         e
@@ -132,88 +139,320 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let bind_addr: SocketAddr = config.server.bind.parse().map_err(|e| {
-        eprintln!("Invalid bind address '{}': {e}", config.server.bind);
-        e
-    })?;
+    match cli.mode {
+        RunMode::Daemon => run_daemon(cli, config).await,
+        RunMode::Tui => run_tui(cli, config).await,
+    }
+}
 
-    tracing::info!("Starting BACnet gateway...");
+// ─── daemon mode ────────────────────────────────────────────────────────────
 
-    // Build the BACnet stack.
+async fn run_daemon(cli: Cli, config: GatewayConfig) -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing_daemon(&cli)?;
+
+    if cli.transport.includes_http() && resolved_http_bind(&config, &cli).is_none() {
+        eprintln!(
+            "Error: --transport {:?} requires either --bind or [mcp.http] in config.",
+            cli.transport
+        );
+        std::process::exit(2);
+    }
+
+    tracing::info!("Starting bacnet-mcp (daemon mode)");
+
     let built = GatewayBuilder::new(config.clone())
         .build()
         .await
         .map_err(|e| {
-            eprintln!("Failed to build gateway: {e}");
+            eprintln!("Failed to build BACnet stack: {e}");
             e
         })?;
-
     tracing::info!("BACnet server started on MAC {:02x?}", built.server_mac);
 
-    // Build the Axum router.
-    let mut router = Router::new();
+    let shutdown = CancellationToken::new();
+    let stdio_handle = if cli.transport.includes_stdio() {
+        Some(spawn_stdio_server(built.state.clone(), shutdown.clone()))
+    } else {
+        None
+    };
 
-    if !cli.no_api {
-        let auth: Option<Box<dyn Authenticator>> = config
-            .server
-            .api_key
-            .as_ref()
-            .map(|key| Box::new(BearerTokenAuth::new(key.clone())) as Box<dyn Authenticator>);
-        let api = api_router(built.state.clone(), auth);
-        router = router.merge(api);
-        tracing::info!("REST API enabled at /api/v1/");
+    let http_handle = if cli.transport.includes_http() {
+        let bind = resolved_http_bind(&config, &cli).expect("validated above");
+        Some(spawn_http_server(
+            built.state.clone(),
+            config.mcp.api_key.clone(),
+            bind,
+            shutdown.clone(),
+        )?)
+    } else {
+        None
+    };
+
+    wait_for_shutdown(shutdown.clone()).await;
+    tracing::info!("Received shutdown signal — stopping MCP transports");
+
+    if let Some(handle) = stdio_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = http_handle {
+        let _ = handle.await;
     }
 
-    if !cli.no_mcp {
-        let ct = CancellationToken::new();
-        let mcp_state = built.state.clone();
-        let mcp_service = StreamableHttpService::new(
-            move || Ok(GatewayMcp::new(mcp_state.clone())),
-            LocalSessionManager::default().into(),
-            StreamableHttpServerConfig {
-                cancellation_token: ct.child_token(),
-                ..Default::default()
-            },
-        );
-
-        let mut mcp_router = Router::new().nest_service("/mcp", mcp_service);
-
-        // Apply auth to MCP endpoint if configured.
-        if let Some(api_key) = &config.server.api_key {
-            let authenticator = Arc::new(BearerTokenAuth::new(api_key.clone()));
-            mcp_router = mcp_router.layer(middleware::from_fn(move |req: Request, next: Next| {
-                let auth = authenticator.clone();
-                async move {
-                    match auth.authenticate(req.headers()) {
-                        Ok(()) => next.run(req).await,
-                        Err(e) => (
-                            e.status,
-                            axum::Json(serde_json::json!({ "error": e.message })),
-                        )
-                            .into_response(),
-                    }
-                }
-            }));
-        }
-
-        router = router.merge(mcp_router);
-        tracing::info!("MCP server enabled at /mcp");
-    }
-
-    tracing::info!("Listening on {bind_addr}");
-
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    tracing::info!("Shutting down...");
     drop(built);
-
     Ok(())
 }
 
-async fn shutdown_signal() {
+fn init_tracing_daemon(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let level = log_level(cli);
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+
+    if cli.transport.includes_stdio() {
+        let path = resolve_log_path(cli);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(file)
+            .with_ansi(false)
+            .init();
+        eprintln!("bacnet-mcp: logging to {}", path.display());
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    }
+    Ok(())
+}
+
+// ─── tui mode ───────────────────────────────────────────────────────────────
+
+async fn run_tui(cli: Cli, mut config: GatewayConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // TUI mode forces HTTP-only (or no MCP). Stdio is impossible because the
+    // terminal owns stdout. If the user explicitly disabled HTTP, the TUI runs
+    // alone with no outside MCP surface.
+    let want_http = !cli.no_http;
+    if want_http && resolved_http_bind(&config, &cli).is_none() {
+        // Auto-enable HTTP at the default bind so the TUI is always useful.
+        config.mcp.http = Some(bacnet_mcp::config::McpHttpConfig::default());
+    }
+
+    let log_buffer = bacnet_mcp::tui::LogBuffer::default();
+    init_tracing_tui(&cli, log_buffer.clone())?;
+
+    let built = GatewayBuilder::new(config.clone())
+        .build()
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to build BACnet stack: {e}");
+            e
+        })?;
+    tracing::info!("BACnet server started on MAC {:02x?}", built.server_mac);
+
+    let shutdown = CancellationToken::new();
+
+    let http_handle = if want_http {
+        let bind = resolved_http_bind(&config, &cli).expect("set above");
+        Some(spawn_http_server(
+            built.state.clone(),
+            config.mcp.api_key.clone(),
+            bind,
+            shutdown.clone(),
+        )?)
+    } else {
+        None
+    };
+
+    let result = bacnet_mcp::tui::run(
+        built.state.clone(),
+        config.clone(),
+        cli.config.clone(),
+        log_buffer,
+        shutdown.clone(),
+    )
+    .await;
+
+    if let Some(handle) = http_handle {
+        let _ = handle.await;
+    }
+    drop(built);
+    result.map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })
+}
+
+fn init_tracing_tui(
+    cli: &Cli,
+    log_buffer: bacnet_mcp::tui::LogBuffer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Two destinations:
+    //   1. file (with_ansi(false)) for persistence after the TUI exits
+    //   2. our LogLayer pushing into the in-memory buffer the Observe tab reads
+    let path = resolve_log_path(cli);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(file)
+        .with_ansi(false);
+
+    let level = log_level(cli);
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(bacnet_mcp::tui::LogLayer::new(log_buffer))
+        .init();
+    Ok(())
+}
+
+// ─── shared helpers ─────────────────────────────────────────────────────────
+
+fn log_level(cli: &Cli) -> &'static str {
+    if cli.quiet {
+        "error"
+    } else {
+        match cli.verbose {
+            0 => "warn",
+            1 => "info",
+            2 => "debug",
+            _ => "trace",
+        }
+    }
+}
+
+fn resolve_log_path(cli: &Cli) -> PathBuf {
+    cli.log_file.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("bacnet-mcp-{}.log", std::process::id()))
+    })
+}
+
+fn load_config(path: &str) -> Result<GatewayConfig, Box<dyn std::error::Error>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("Config file '{path}' not found.");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error reading config file '{path}': {e}");
+            std::process::exit(1);
+        }
+    };
+    Ok(GatewayConfig::from_json(&text)?)
+}
+
+fn apply_cli_overrides(config: &mut GatewayConfig, cli: &Cli) {
+    if let Some(bind) = &cli.bind {
+        let http = config.mcp.http.get_or_insert_with(Default::default);
+        http.bind = bind.clone();
+    }
+    if let Some(key) = &cli.api_key {
+        config.mcp.api_key = Some(key.clone());
+    }
+    if config.mcp.api_key.is_none() {
+        if let Ok(key) = std::env::var("BACNET_MCP_API_KEY") {
+            config.mcp.api_key = Some(key);
+        }
+    }
+    if cli.read_only {
+        config.mcp.read_only = true;
+    } else if cli.writes_enabled {
+        config.mcp.read_only = false;
+    }
+}
+
+fn resolved_http_bind(config: &GatewayConfig, cli: &Cli) -> Option<String> {
+    cli.bind
+        .clone()
+        .or_else(|| config.mcp.http.as_ref().map(|h| h.bind.clone()))
+}
+
+fn spawn_stdio_server(
+    state: bacnet_mcp::state::GatewayState,
+    shutdown: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tracing::info!("MCP stdio transport: ready");
+        match GatewayMcp::new(state)
+            .serve(rmcp::transport::io::stdio())
+            .await
+        {
+            Ok(server) => {
+                tokio::select! {
+                    _ = server.waiting() => {
+                        tracing::info!("MCP stdio peer disconnected");
+                    }
+                    _ = shutdown.cancelled() => {
+                        tracing::info!("MCP stdio: shutdown requested");
+                    }
+                }
+            }
+            Err(e) => tracing::error!("MCP stdio failed to start: {e}"),
+        }
+        shutdown.cancel();
+    })
+}
+
+fn spawn_http_server(
+    state: bacnet_mcp::state::GatewayState,
+    api_key: Option<String>,
+    bind: String,
+    shutdown: CancellationToken,
+) -> Result<tokio::task::JoinHandle<()>, Box<dyn std::error::Error>> {
+    let bind_addr: SocketAddr = bind
+        .parse()
+        .map_err(|e| format!("invalid HTTP bind '{bind}': {e}"))?;
+
+    let mcp_state = state.clone();
+    let svc = StreamableHttpService::new(
+        move || Ok(GatewayMcp::new(mcp_state.clone())),
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default(),
+    );
+
+    let mut router = Router::new().nest_service("/mcp", svc);
+    if let Some(key) = api_key {
+        let auth = Arc::new(BearerTokenAuth::new(key));
+        router = router.layer(middleware::from_fn(move |req: Request, next: Next| {
+            let auth = auth.clone();
+            async move {
+                match auth.authenticate(req.headers()) {
+                    Ok(()) => next.run(req).await,
+                    Err(e) => (
+                        e.status,
+                        axum::Json(serde_json::json!({ "error": e.message })),
+                    )
+                        .into_response(),
+                }
+            }
+        }));
+    }
+
+    let shutdown_for_serve = shutdown.clone();
+    Ok(tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!("MCP HTTP failed to bind {bind_addr}: {e}");
+                shutdown_for_serve.cancel();
+                return;
+            }
+        };
+        tracing::info!("MCP streamable-HTTP transport: listening on {bind_addr}/mcp");
+        let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
+            shutdown_for_serve.cancelled().await;
+        });
+        if let Err(e) = serve.await {
+            tracing::error!("MCP HTTP serve error: {e}");
+        }
+        shutdown.cancel();
+    }))
+}
+
+async fn wait_for_shutdown(shutdown: CancellationToken) {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
     {
@@ -222,11 +461,15 @@ async fn shutdown_signal() {
         tokio::select! {
             _ = ctrl_c => {},
             _ = sigterm.recv() => {},
+            _ = shutdown.cancelled() => {},
         }
     }
     #[cfg(not(unix))]
     {
-        ctrl_c.await.ok();
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = shutdown.cancelled() => {},
+        }
     }
-    tracing::info!("Received shutdown signal");
+    shutdown.cancel();
 }

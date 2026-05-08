@@ -1,86 +1,152 @@
-name: CI
+# CI for bacnet-mcp.
+#
+# Patterns adopted from selene-db: PR-driven trigger, draft-PR skip, Cargo.lock
+# guards on advisory checks, file-size cap (700 LOC) and no-secret scan as
+# dedicated jobs, --locked flags for reproducibility, minimum-privilege
+# permissions. Multi-OS test matrix retained because BACnet UDP socket behavior
+# differs across platforms.
+#
+# Security notes:
+#   - No `${{ github.event.* }}` interpolations appear in any `run:` command;
+#     all such expansions are confined to `if:` conditions, `concurrency:`
+#     keys, and `with:` action inputs. No shell-injection surface.
+
+name: ci
 
 on:
-  push:
-    branches: [main, dev]
-    tags: ["v*"]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   RUSTFLAGS: "-Dwarnings"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   fmt:
-    name: Rustfmt
+    name: fmt
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.93"
           components: rustfmt
       - run: cargo fmt --all --check
 
   clippy:
-    name: Clippy
+    name: clippy
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.93"
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --features bin
+      - run: cargo clippy --all-targets --features bin --locked -- -D warnings
 
   test:
-    name: Test (${{ matrix.os }})
+    name: test (${{ matrix.os }})
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            features: "--features bin,sc-tls,serial"
-          - os: macos-latest
-            features: "--features bin,sc-tls"
-          - os: windows-latest
-            features: "--features bin,sc-tls"
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
-      - run: cargo test ${{ matrix.features }}
+      - run: cargo test --features bin,sc --locked
 
   build-bin:
-    name: Build Binary
+    name: build-bin
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: build-bin
-      - run: cargo build --release --features bin
+      - run: cargo build --release --features bin --locked
 
   deny:
-    name: Cargo Deny
+    name: cargo-deny
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - id: cargo-lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.cargo-lock.outputs.exists == 'false'
+        run: echo "No Cargo.lock yet; cargo-deny starts once dependencies land."
       - uses: EmbarkStudios/cargo-deny-action@v2
+        if: steps.cargo-lock.outputs.exists == 'true'
+        with:
+          command: check bans licenses sources
+
+  audit:
+    name: cargo-audit
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cargo-lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.cargo-lock.outputs.exists == 'false'
+        run: echo "No Cargo.lock yet; cargo-audit starts once dependencies land."
+      - uses: taiki-e/install-action@v2
+        if: steps.cargo-lock.outputs.exists == 'true'
+        with:
+          tool: cargo-audit
+      - uses: actions/cache@v4
+        if: steps.cargo-lock.outputs.exists == 'true'
+        with:
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: advisory-db-${{ runner.os }}-
+      - if: steps.cargo-lock.outputs.exists == 'true'
+        run: cargo audit --color always
+
+  file-size-cap:
+    name: file-size cap (700 LOC)
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/check-file-size.sh
+
+  no-secret-scan:
+    name: no-secret scan
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/check-no-secrets.sh

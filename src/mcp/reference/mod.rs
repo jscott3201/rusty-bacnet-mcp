@@ -4,6 +4,7 @@
 //! about BACnet concepts, object types, properties, and troubleshooting.
 
 pub mod content;
+pub mod details;
 
 use rmcp::model::{Annotated, RawResource, RawResourceTemplate, Resource, ResourceTemplate};
 
@@ -108,7 +109,7 @@ pub fn read_reference(uri: &str) -> Option<String> {
         "bacnet://reference/troubleshooting" => Some(content::TROUBLESHOOTING.to_string()),
         _ if uri.starts_with("bacnet://reference/object-types/") => {
             let type_name = uri.strip_prefix("bacnet://reference/object-types/")?;
-            content::object_type_detail(type_name)
+            details::object_type_detail(type_name)
         }
         _ => None,
     }

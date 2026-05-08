@@ -1,19 +1,19 @@
 [package]
-name = "bacnet-gateway"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.93"
+name = "bacnet-mcp"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/jscott3201/rusty-bacnet-mcp"
 homepage = "https://github.com/jscott3201/rusty-bacnet-mcp"
-description = "BACnet HTTP REST API and MCP server gateway for AI-driven building automation"
-keywords = ["bacnet", "building-automation", "gateway", "mcp", "rest-api"]
-categories = ["network-programming", "web-programming::http-server"]
+description = "Dedicated MCP server for agentic interaction with BACnet building automation networks"
+keywords = ["bacnet", "building-automation", "mcp", "agentic", "iot"]
+categories = ["network-programming"]
 authors = ["Justin Scott <jscott3201@gmail.com>"]
 publish = false
 
 [[bin]]
-name = "bacnet-gateway"
+name = "bacnet-mcp"
 path = "src/main.rs"
 required-features = ["bin"]
 
@@ -27,42 +27,57 @@ bacnet-client    = "0.8"
 bacnet-objects   = "0.8"
 bacnet-server    = "0.8"
 
-bytes = "1"
-tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "sync", "macros", "time", "signal"] }
-serde = { version = "1", features = ["derive"] }
+bytes      = "1"
+tokio      = { version = "1", features = ["net", "rt", "rt-multi-thread", "sync", "macros", "time", "signal", "fs", "io-std"] }
+serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1"
-tracing = "0.1"
+tracing    = "0.1"
 
-# http feature
-axum   = { version = "0.8", optional = true }
-tower  = { version = "0.5", optional = true }
-subtle = { version = "2",   optional = true }
-
-# mcp feature
-rmcp     = { version = "~1.2", features = ["server", "transport-streamable-http-server"], optional = true }
+# mcp feature — server, transports, and HTTP glue (axum) for the streamable-HTTP transport
+rmcp     = { version = "1.6", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session", "tower"], optional = true }
 schemars = { version = "1", optional = true }
+axum     = { version = "0.8", optional = true }
+tower    = { version = "0.5", optional = true }
+subtle   = { version = "2", optional = true }
+
+# tui feature — ratatui ecosystem for the operator console
+# Pinned to ratatui 0.29 so we can reuse tui-textarea and tui-widgets, which
+# lag the 0.30 release. We ship our own LogLayer instead of pulling tui-logger.
+ratatui      = { version = "0.29", optional = true }
+crossterm    = { version = "0.28", features = ["event-stream"], optional = true }
+tui-widgets  = { version = "0.4", optional = true }
+tui-textarea = { version = "0.7", optional = true }
+color-eyre   = { version = "0.6", optional = true }
+futures      = { version = "0.3", optional = true }
+parking_lot  = { version = "0.12", optional = true }
 
 # bin feature
-clap               = { version = "4",   features = ["derive"], optional = true }
+clap               = { version = "4", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 tokio-util         = { version = "0.7", features = ["rt"], optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["net", "rt", "sync", "macros", "time", "test-util"] }
-http-body-util = "0.1"
-tower    = { version = "0.5", features = ["util"] }
-axum     = "0.8"
-subtle   = "2"
-rmcp     = { version = "~1.2", features = ["server", "transport-streamable-http-server"] }
+tokio    = { version = "1", features = ["net", "rt", "sync", "macros", "time", "test-util"] }
+rmcp     = { version = "1.6", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "tower"] }
 schemars = "1"
+axum     = "0.8"
+tower    = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+subtle   = "2"
 
 [features]
-# Standalone repo flips the default to ["http", "mcp"] — library consumers who
-# want config-only can opt out with default-features = false.
-default = ["http", "mcp"]
-http    = ["dep:axum", "dep:tower", "dep:subtle"]
-mcp     = ["dep:rmcp", "dep:schemars"]
-bin     = ["http", "mcp", "dep:clap", "dep:tracing-subscriber", "dep:tokio-util"]
-sc-tls  = ["bacnet-transport/sc-tls"]
-serial  = ["bacnet-transport/serial"]
+# Library consumers wanting config-only with no MCP/web deps: default-features = false.
+default = ["mcp"]
+mcp     = ["dep:rmcp", "dep:schemars", "dep:axum", "dep:tower", "dep:subtle"]
+tui     = [
+    "dep:ratatui",
+    "dep:crossterm",
+    "dep:tui-widgets",
+    "dep:tui-textarea",
+    "dep:color-eyre",
+    "dep:futures",
+    "dep:parking_lot",
+]
+bin     = ["mcp", "tui", "dep:clap", "dep:tracing-subscriber", "dep:tokio-util"]
+# BACnet/SC transport (forwards to bacnet-transport's TLS WebSocket support).
+sc      = ["bacnet-transport/sc-tls"]
