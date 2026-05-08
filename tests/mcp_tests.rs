@@ -460,13 +460,15 @@ async fn write_to_life_safety_type_is_denied_and_audited() {
 
 #[tokio::test]
 async fn relinquish_no_client_audits_then_errors() {
+    // This test pins Codex's PR #3 P2 fix: pre-send transport failures
+    // (require_client / resolve_device) MUST record an audit entry. Before
+    // the fix, the early `?` returned without auditing, leaving forensic
+    // gaps on the most common operational failure (BACnet client not yet
+    // started by the daemon).
     use bacnet_mcp::mcp::properties::{RelinquishParams, relinquish_at_priority_impl};
 
     let state = test_state();
 
-    // dry_run = false but no client → should error AFTER policy passes.
-    // Policy passes (analog-output:1 + priority 10 is allowed by default),
-    // so we expect "not started" not "Policy denied".
     let result = relinquish_at_priority_impl(
         &state,
         RelinquishParams {
@@ -481,6 +483,91 @@ async fn relinquish_no_client_audits_then_errors() {
     .await;
     let err = result.unwrap_err();
     assert!(err.contains("not started"), "got: {err}");
+
+    // The fix: an `error` audit entry must exist for the no-client failure.
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1, "no-client failure must audit; got: {snap:?}");
+    assert_eq!(snap[0].tool, "relinquish_at_priority");
+    assert_eq!(snap[0].decision, "error");
+    assert!(snap[0].reason.contains("not started"));
+}
+
+#[tokio::test]
+async fn write_property_no_client_audits_pre_send_failure() {
+    // Pins Codex P2: write_property with no client must audit the early
+    // failure, not silently `?` past the audit append.
+    use bacnet_mcp::mcp::properties::{WritePropertyParams, write_property_impl};
+
+    let state = test_state();
+    let result = write_property_impl(
+        &state,
+        WritePropertyParams {
+            device_instance: 1234,
+            object_type: "analog-output".into(),
+            object_instance: 1,
+            property: "present-value".into(),
+            value: serde_json::json!(72.5),
+            priority: Some(10),
+            dry_run: false,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("not started"), "got: {err}");
+
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1, "no-client failure must audit; got: {snap:?}");
+    assert_eq!(snap[0].tool, "write_property");
+    assert_eq!(snap[0].decision, "error");
+    assert_eq!(snap[0].priority, Some(10));
+}
+
+#[tokio::test]
+async fn write_property_read_only_mode_audits_deny() {
+    // Pins Codex P2: require_writable failure (read-only daemon) must
+    // record an audit entry.
+    use bacnet_mcp::config::McpConfig;
+    use bacnet_mcp::mcp::properties::{WritePropertyParams, write_property_impl};
+
+    // Build a state with read_only=true (the production default).
+    let mut cfg = test_config();
+    cfg.mcp = McpConfig {
+        read_only: true,
+        ..McpConfig::default()
+    };
+    let mut db = bacnet_objects::database::ObjectDatabase::new();
+    let device = bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
+        instance: 1234,
+        name: "Test".into(),
+        vendor_id: 999,
+        ..bacnet_objects::device::DeviceConfig::default()
+    })
+    .unwrap();
+    db.add(Box::new(device)).unwrap();
+    let state = bacnet_mcp::state::GatewayState::new(db, cfg);
+
+    let result = write_property_impl(
+        &state,
+        WritePropertyParams {
+            device_instance: 1234,
+            object_type: "analog-output".into(),
+            object_instance: 1,
+            property: "present-value".into(),
+            value: serde_json::json!(1.0),
+            priority: Some(10),
+            dry_run: false,
+        },
+    )
+    .await;
+    assert!(
+        result.unwrap_err().to_lowercase().contains("read-only"),
+        "expected read-only refusal"
+    );
+
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].decision, "deny");
+    assert!(snap[0].reason.to_lowercase().contains("read-only"));
 }
 
 #[tokio::test]

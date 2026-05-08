@@ -122,12 +122,27 @@ impl AuditLog {
     /// resource is the agent-facing surface.
     pub fn append(&self, entry: AuditEntry) {
         let mut inner = self.inner.lock();
+        // File mirror runs first and is independent of in-memory capacity —
+        // operators may want disk-only auditing (capacity=0) without losing
+        // any records. JSON-Lines format means downstream tooling reads the
+        // file directly.
         if let Some(path) = inner.file_path.clone() {
             if let Err(e) = append_jsonl(&path, &entry) {
                 tracing::warn!("audit file append failed ({}): {}", path.display(), e);
             }
         }
-        if inner.entries.len() == inner.capacity {
+        // Codex P2 (PR #3 review): a misconfigured `mcp.audit.capacity = 0`
+        // previously hit the `len == capacity` check only when full and then
+        // pushed unconditionally, growing the buffer unbounded. Treat 0 as
+        // "in-memory ring disabled"; rely on the file mirror for forensic
+        // record (or accept the loss if no path is set — operator opted in).
+        if inner.capacity == 0 {
+            return;
+        }
+        // `>= capacity` not `==` so a capacity that shrinks at hot-reload
+        // (rare but possible if we add resizing later) doesn't grow past
+        // the current limit.
+        while inner.entries.len() >= inner.capacity {
             inner.entries.pop_front();
         }
         inner.entries.push_back(entry);

@@ -10,6 +10,12 @@ use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::error::Error;
 
+/// Builder error. We promote to a boxed `std::error::Error` here because
+/// `bacnet_types::error::Error` has no free-form variant, and the gateway
+/// build path needs to surface both BACnet errors and our own validation
+/// errors (e.g. malformed `mcp.safety` config — Codex P1 in PR #3).
+pub type BuildError = Box<dyn std::error::Error>;
+
 use crate::config::GatewayConfig;
 use crate::parse::{construct_object, parse_object_type};
 use crate::state::GatewayState;
@@ -29,7 +35,7 @@ impl GatewayBuilder {
     ///
     /// Currently supports BIP transport only. SC and MS/TP will be added
     /// when the router-centric model with LoopbackTransport is wired.
-    pub async fn build(self) -> Result<BuiltGateway, Error> {
+    pub async fn build(self) -> Result<BuiltGateway, BuildError> {
         // Build object database with Device object.
         let mut db = ObjectDatabase::new();
         let device = DeviceObject::new(BacnetDeviceConfig {
@@ -142,7 +148,14 @@ impl GatewayBuilder {
             .build()
             .await?;
 
-        let state = GatewayState::new_with_stack(db, Arc::new(self.config), client);
+        // Use the fallible constructor so a malformed `mcp.safety` block
+        // surfaces as a normal build error instead of a panic. Codex flagged
+        // the prior `expect()` path as P1 in PR #3 review — config typos
+        // should never abort the daemon abruptly. `validate()` already
+        // pre-checks the safety block at config load, so this is defense
+        // in depth.
+        let state = GatewayState::try_new_with_stack(db, Arc::new(self.config), client)
+            .map_err(|msg| -> BuildError { format!("safety config: {msg}").into() })?;
 
         Ok(BuiltGateway {
             state,

@@ -110,6 +110,61 @@ fn default_present_value() -> String {
     "present-value".to_string()
 }
 
+/// Per-call audit helper. Codex flagged two related issues in PR #3 review:
+///
+/// - **P1**: allowed writes were audited only AFTER the BACnet round-trip,
+///   contradicting the docstring's "audit before round-trip so a crash
+///   mid-flight still leaves a record of intent" claim.
+/// - **P2**: early failures (`require_writable`, `require_client`, parse,
+///   encode, `resolve_device`) returned without an audit entry, leaving
+///   forensic gaps for common operational errors.
+///
+/// This helper threads the audit append through every error/early-out path.
+/// `target` and `property` reflect whatever the caller passed — even on
+/// pre-parse failures, the audit record names what the agent tried to do.
+struct WriteAudit<'a> {
+    state: &'a GatewayState,
+    tool: &'static str,
+    target: String,
+    property: String,
+    priority: Option<u8>,
+    dry_run: bool,
+}
+
+impl<'a> WriteAudit<'a> {
+    /// Record `deny` (policy or pre-flight validation refused the write) and
+    /// return `reason` so the caller can `?` it back to the MCP client.
+    fn deny(&self, reason: String) -> String {
+        self.append("deny", reason)
+    }
+
+    /// Record `error` (validation passed but a downstream / network step
+    /// failed). Returned for `?` by the caller.
+    fn err(&self, reason: String) -> String {
+        self.append("error", reason)
+    }
+
+    /// Record `allow` (intent). Called BEFORE the BACnet `await` for real
+    /// writes so a crash between dispatch and response still leaves a trace.
+    /// Also called for `dry_run = true` (the dry-run IS the intent).
+    fn allow(&self) {
+        self.append("allow", String::new());
+    }
+
+    fn append(&self, decision: &'static str, reason: String) -> String {
+        self.state.audit.append(AuditEntry::now(
+            self.tool,
+            Some(self.target.clone()),
+            Some(self.property.clone()),
+            self.priority,
+            self.dry_run,
+            decision,
+            reason.clone(),
+        ));
+        reason
+    }
+}
+
 pub async fn read_property_impl(
     state: &GatewayState,
     params: ReadPropertyParams,
@@ -165,56 +220,59 @@ pub async fn write_property_impl(
     state: &GatewayState,
     params: WritePropertyParams,
 ) -> Result<String, String> {
-    state.require_writable()?;
+    let audit = WriteAudit {
+        state,
+        tool: "write_property",
+        // Use raw user input so even pre-parse failures get a useful audit
+        // record. Once parse succeeds we don't bother re-canonicalizing —
+        // the public object-type vocabulary is kebab-case in both directions.
+        target: format!("{}:{}", params.object_type, params.object_instance),
+        property: params.property.clone(),
+        priority: params.priority,
+        dry_run: params.dry_run,
+    };
 
-    let obj_type = parse_object_type(&params.object_type)?;
-    let property = parse_property_name(&params.property)?;
-    let oid =
-        ObjectIdentifier::new(obj_type, params.object_instance).map_err(|e| format!("{e}"))?;
-    let target_str = format!("{}:{}", object_type_name(obj_type), params.object_instance);
+    state.require_writable().map_err(|m| audit.deny(m))?;
+
+    let obj_type = parse_object_type(&params.object_type).map_err(|m| audit.deny(m))?;
+    let property = parse_property_name(&params.property).map_err(|m| audit.deny(m))?;
+    let oid = ObjectIdentifier::new(obj_type, params.object_instance)
+        .map_err(|e| audit.deny(format!("{e}")))?;
 
     // Policy gate. Evaluated and audited regardless of dry_run.
     if let PolicyDecision::Deny(reason) = state.flags.policy().evaluate(oid, params.priority) {
-        state.audit.append(AuditEntry::now(
-            "write_property",
-            Some(target_str),
-            Some(property_name(property).to_string()),
-            params.priority,
-            params.dry_run,
-            "deny",
-            reason.clone(),
-        ));
-        return Err(format!("Policy denied: {reason}"));
+        return Err(format!("Policy denied: {}", audit.deny(reason)));
     }
 
     let value = crate::parse::json_to_property_value(&params.value)
-        .map_err(|e| format!("Error parsing value: {e}"))?;
+        .map_err(|e| audit.err(format!("Error parsing value: {e}")))?;
 
     if params.dry_run {
-        state.audit.append(AuditEntry::now(
-            "write_property",
-            Some(target_str.clone()),
-            Some(property_name(property).to_string()),
-            params.priority,
-            true,
-            "allow",
-            String::new(),
-        ));
+        audit.allow();
         return Ok(format!(
             "[dry-run] Would write {} to {} {} (priority {:?})",
             params.value,
-            target_str,
+            audit.target,
             property_name(property),
             params.priority,
         ));
     }
 
-    let client = state.require_client()?;
-    let dev_entry = state.resolve_device(params.device_instance).await?;
+    let client = state.require_client().map_err(|m| audit.err(m))?;
+    let dev_entry = state
+        .resolve_device(params.device_instance)
+        .await
+        .map_err(|m| audit.err(m))?;
 
     let mut buf = bytes::BytesMut::new();
     bacnet_encoding::primitives::encode_property_value(&mut buf, &value)
-        .map_err(|e| format!("Error encoding value: {e}"))?;
+        .map_err(|e| audit.err(format!("Error encoding value: {e}")))?;
+
+    // Codex P1: audit BEFORE the round-trip so a crash mid-flight still
+    // records intent. The post-await Err arm appends a second `error` entry
+    // with the wire-level failure; success path is the implicit complement
+    // of the pre-await `allow`.
+    audit.allow();
 
     match client
         .write_property(
@@ -227,34 +285,16 @@ pub async fn write_property_impl(
         )
         .await
     {
-        Ok(()) => {
-            state.audit.append(AuditEntry::now(
-                "write_property",
-                Some(target_str.clone()),
-                Some(property_name(property).to_string()),
-                params.priority,
-                false,
-                "allow",
-                String::new(),
-            ));
-            Ok(format!(
-                "Successfully wrote {} to {} {}",
-                params.value,
-                target_str,
-                property_name(property),
-            ))
-        }
+        Ok(()) => Ok(format!(
+            "Successfully wrote {} to {} {}",
+            params.value,
+            audit.target,
+            property_name(property),
+        )),
         Err(e) => {
-            let err_msg = format!("{e}");
-            state.audit.append(AuditEntry::now(
-                "write_property",
-                Some(target_str),
-                Some(property_name(property).to_string()),
-                params.priority,
-                false,
-                "error",
-                err_msg.clone(),
-            ));
+            // Second entry — wire failure paired with the pre-await `allow`.
+            // Forensic review sees both: intent recorded, then outcome.
+            let err_msg = audit.err(format!("{e}"));
             Err(format!("Error writing property: {err_msg}"))
         }
     }
@@ -275,49 +315,43 @@ pub async fn relinquish_at_priority_impl(
     state: &GatewayState,
     params: RelinquishParams,
 ) -> Result<String, String> {
-    state.require_writable()?;
+    let audit = WriteAudit {
+        state,
+        tool: "relinquish_at_priority",
+        target: format!("{}:{}", params.object_type, params.object_instance),
+        property: params.property.clone(),
+        priority: Some(params.priority),
+        dry_run: params.dry_run,
+    };
 
-    let obj_type = parse_object_type(&params.object_type)?;
-    let property = parse_property_name(&params.property)?;
-    let oid =
-        ObjectIdentifier::new(obj_type, params.object_instance).map_err(|e| format!("{e}"))?;
-    let target_str = format!("{}:{}", object_type_name(obj_type), params.object_instance);
+    state.require_writable().map_err(|m| audit.deny(m))?;
+
+    let obj_type = parse_object_type(&params.object_type).map_err(|m| audit.deny(m))?;
+    let property = parse_property_name(&params.property).map_err(|m| audit.deny(m))?;
+    let oid = ObjectIdentifier::new(obj_type, params.object_instance)
+        .map_err(|e| audit.deny(format!("{e}")))?;
 
     // Policy gate — relinquish IS a write, so the same caps apply.
     if let PolicyDecision::Deny(reason) = state.flags.policy().evaluate(oid, Some(params.priority))
     {
-        state.audit.append(AuditEntry::now(
-            "relinquish_at_priority",
-            Some(target_str),
-            Some(property_name(property).to_string()),
-            Some(params.priority),
-            params.dry_run,
-            "deny",
-            reason.clone(),
-        ));
-        return Err(format!("Policy denied: {reason}"));
+        return Err(format!("Policy denied: {}", audit.deny(reason)));
     }
 
     if params.dry_run {
-        state.audit.append(AuditEntry::now(
-            "relinquish_at_priority",
-            Some(target_str.clone()),
-            Some(property_name(property).to_string()),
-            Some(params.priority),
-            true,
-            "allow",
-            String::new(),
-        ));
+        audit.allow();
         return Ok(format!(
             "[dry-run] Would relinquish {} {} at priority {}",
-            target_str,
+            audit.target,
             property_name(property),
             params.priority,
         ));
     }
 
-    let client = state.require_client()?;
-    let dev_entry = state.resolve_device(params.device_instance).await?;
+    let client = state.require_client().map_err(|m| audit.err(m))?;
+    let dev_entry = state
+        .resolve_device(params.device_instance)
+        .await
+        .map_err(|m| audit.err(m))?;
 
     // BACnet "release" wire encoding: write NULL (one zero byte tag) at the
     // given priority slot. The encoding helper emits the application-tagged
@@ -327,7 +361,10 @@ pub async fn relinquish_at_priority_impl(
         &mut buf,
         &bacnet_types::primitives::PropertyValue::Null,
     )
-    .map_err(|e| format!("Error encoding NULL: {e}"))?;
+    .map_err(|e| audit.err(format!("Error encoding NULL: {e}")))?;
+
+    // Codex P1: pre-await intent record (matches write_property).
+    audit.allow();
 
     match client
         .write_property(
@@ -340,35 +377,15 @@ pub async fn relinquish_at_priority_impl(
         )
         .await
     {
-        Ok(()) => {
-            state.audit.append(AuditEntry::now(
-                "relinquish_at_priority",
-                Some(target_str.clone()),
-                Some(property_name(property).to_string()),
-                Some(params.priority),
-                false,
-                "allow",
-                String::new(),
-            ));
-            Ok(format!(
-                "Released {} {} at priority {}",
-                target_str,
-                property_name(property),
-                params.priority,
-            ))
-        }
-        Err(e) => {
-            let err_msg = format!("{e}");
-            state.audit.append(AuditEntry::now(
-                "relinquish_at_priority",
-                Some(target_str),
-                Some(property_name(property).to_string()),
-                Some(params.priority),
-                false,
-                "error",
-                err_msg.clone(),
-            ));
-            Err(format!("Error relinquishing: {err_msg}"))
-        }
+        Ok(()) => Ok(format!(
+            "Released {} {} at priority {}",
+            audit.target,
+            property_name(property),
+            params.priority,
+        )),
+        Err(e) => Err(format!(
+            "Error relinquishing: {}",
+            audit.err(format!("{e}"))
+        )),
     }
 }

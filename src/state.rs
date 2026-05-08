@@ -60,12 +60,22 @@ impl RuntimeFlags {
     /// Hot-swap the live fields from a new config. Only fields classified as
     /// `Applied` by `reload_safety_check` are read here — everything else is
     /// frozen until the daemon restarts.
+    ///
+    /// **Atomicity:** every field that may fail validation is parsed BEFORE
+    /// any live state is mutated. A failed reload returns `Err` with both
+    /// `read_only` and `policy` left exactly as they were. This pins the
+    /// invariant Codex flagged in PR #3 review (P1): a malformed safety block
+    /// can no longer flip `read_only` mid-reload.
     pub fn apply(&self, config: &GatewayConfig) -> Result<(), String> {
-        self.read_only
-            .store(config.mcp.read_only, Ordering::Relaxed);
         let safety_default = crate::config::SafetyConfig::default();
         let new_policy =
             WritePolicy::from_config(config.mcp.safety.as_ref().unwrap_or(&safety_default))?;
+        // Parse OK — now commit both fields. Stores are independently atomic
+        // but we treat the pair as a logical group; in-flight readers see one
+        // or the other transitional state for at most a few nanoseconds, which
+        // is acceptable for hot-reload semantics.
+        self.read_only
+            .store(config.mcp.read_only, Ordering::Relaxed);
         self.policy.store(Arc::new(new_policy));
         Ok(())
     }

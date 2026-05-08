@@ -391,6 +391,45 @@ impl GatewayConfig {
             }
         }
 
+        // Safety policy validation. Catches malformed `mcp.safety` blocks at
+        // config load instead of at the first MCP write call. This is also
+        // the place that pins BACnet's 1–16 priority range — Codex P2 in
+        // PR #3 review flagged that out-of-range values were silently
+        // accepted before this check landed.
+        if let Some(safety) = &self.mcp.safety {
+            if let Some(min) = safety.min_priority {
+                if !(1..=16).contains(&min) {
+                    return Err(ConfigError {
+                        message: format!(
+                            "mcp.safety.min_priority {min} is out of BACnet range 1..=16"
+                        ),
+                    });
+                }
+            }
+            if let Some(max) = safety.max_priority {
+                if !(1..=16).contains(&max) {
+                    return Err(ConfigError {
+                        message: format!(
+                            "mcp.safety.max_priority {max} is out of BACnet range 1..=16"
+                        ),
+                    });
+                }
+            }
+            if let (Some(min), Some(max)) = (safety.min_priority, safety.max_priority) {
+                if min > max {
+                    return Err(ConfigError {
+                        message: format!(
+                            "mcp.safety.min_priority ({min}) must be ≤ max_priority ({max})"
+                        ),
+                    });
+                }
+            }
+            // Build the policy once at validate-time so type/object name
+            // parse errors fail loudly here rather than at hot-reload.
+            crate::safety::WritePolicy::from_config(safety)
+                .map_err(|message| ConfigError { message })?;
+        }
+
         // Routes can only target known transports.
         for route in &self.routes {
             match route.via_transport.as_str() {

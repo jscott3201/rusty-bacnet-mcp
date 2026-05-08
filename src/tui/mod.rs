@@ -786,6 +786,45 @@ mod reload_tests {
     }
 
     #[test]
+    fn runtime_flags_apply_is_atomic_on_safety_parse_failure() {
+        // Codex P1 (PR #3 review): a malformed `mcp.safety` block must NOT
+        // mutate `read_only` mid-reload. Before the fix, `apply` stored the
+        // new `read_only` first and only then tried to parse the policy —
+        // a parse error returned `Err` with `read_only` already flipped.
+        let config = baseline(); // read_only = true
+        let flags = crate::state::RuntimeFlags::from_config(&config).unwrap();
+        assert!(flags.is_read_only());
+        let policy_before = std::sync::Arc::as_ptr(&flags.policy());
+
+        // Construct a config that flips read_only AND has an invalid
+        // safety block. Both fields are classified as Applied; before the
+        // fix, read_only would commit before the policy parse fails.
+        let mut bad = baseline();
+        bad.mcp.read_only = false;
+        bad.mcp.safety = Some(crate::config::SafetyConfig {
+            min_priority: Some(99), // out of BACnet 1..=16 range
+            ..crate::config::SafetyConfig::default()
+        });
+
+        let err = flags.apply(&bad).unwrap_err();
+        assert!(
+            err.contains("min_priority") || err.contains("99"),
+            "expected priority-range error, got: {err}"
+        );
+        // read_only must still be true (its pre-apply value).
+        assert!(
+            flags.is_read_only(),
+            "read_only must not flip when safety parse fails"
+        );
+        // policy must be the same Arc instance (unchanged).
+        let policy_after = std::sync::Arc::as_ptr(&flags.policy());
+        assert_eq!(
+            policy_before, policy_after,
+            "policy Arc must not swap when parse fails"
+        );
+    }
+
+    #[test]
     fn mirror_applied_fields_only_updates_hot_safe_bits() {
         // The TUI calls mirror_applied_fields on PartialApplied so the runtime
         // view shows new values for applied fields while keeping old values for

@@ -105,13 +105,37 @@ impl WritePolicy {
             .map(|v| parse_object_specs(v))
             .transpose()?
             .unwrap_or(defaults.deny_objects);
+        // Codex flagged out-of-range priorities (PR #3 review, P2). BACnet
+        // command priorities are 1..=16; anything outside is a config typo,
+        // not a permissive intent. We validate here as well as in
+        // `GatewayConfig::validate` so direct callers of `from_config` (e.g.
+        // tests, custom embeddings) get the same guarantee.
+        let min_priority = cfg.min_priority.or(defaults.min_priority);
+        let max_priority = cfg.max_priority.or(defaults.max_priority);
+        if let Some(p) = min_priority {
+            if !(1..=16).contains(&p) {
+                return Err(format!("min_priority {p} is out of BACnet range 1..=16"));
+            }
+        }
+        if let Some(p) = max_priority {
+            if !(1..=16).contains(&p) {
+                return Err(format!("max_priority {p} is out of BACnet range 1..=16"));
+            }
+        }
+        if let (Some(min), Some(max)) = (min_priority, max_priority) {
+            if min > max {
+                return Err(format!(
+                    "min_priority ({min}) must be ≤ max_priority ({max})"
+                ));
+            }
+        }
         Ok(Self {
             allow_object_types,
             deny_object_types,
             allow_objects,
             deny_objects,
-            min_priority: cfg.min_priority.or(defaults.min_priority),
-            max_priority: cfg.max_priority.or(defaults.max_priority),
+            min_priority,
+            max_priority,
         })
     }
 
