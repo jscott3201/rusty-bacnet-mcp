@@ -104,6 +104,7 @@ async fn acknowledge_alarm_dry_run_records_audit_and_skips_send() {
             event_state_acknowledged: 2,
             acknowledgment_source: "operator-test".into(),
             acknowledging_process_identifier: 1,
+            transition_timestamp: None,
             dry_run: true,
         },
     )
@@ -132,6 +133,7 @@ async fn acknowledge_alarm_read_only_mode_audits_deny() {
             event_state_acknowledged: 2,
             acknowledgment_source: "operator-test".into(),
             acknowledging_process_identifier: 1,
+            transition_timestamp: None,
             dry_run: false,
         },
     )
@@ -141,6 +143,88 @@ async fn acknowledge_alarm_read_only_mode_audits_deny() {
         "expected read-only refusal"
     );
 
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].decision, "deny");
+}
+
+#[tokio::test]
+async fn acknowledge_alarm_rejects_invalid_event_state() {
+    // Codex P2 (PR #5): event_state_acknowledged > 15 must fail local
+    // validation rather than be dispatched to the device. The check fires
+    // through the audit deny path so forensic review still records intent.
+    let state = test_state(false);
+    let result = acknowledge_alarm_impl(
+        &state,
+        AcknowledgeAlarmParams {
+            device_instance: 1234,
+            object_type: "analog-input".into(),
+            object_instance: 1,
+            event_state_acknowledged: 99,
+            acknowledgment_source: "operator-test".into(),
+            acknowledging_process_identifier: 1,
+            transition_timestamp: None,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("EventState") || err.contains("event_state_acknowledged"),
+        "got: {err}"
+    );
+
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].decision, "deny");
+}
+
+#[tokio::test]
+async fn acknowledge_alarm_accepts_transition_timestamp() {
+    // Codex P1 (PR #5): a caller can now pass the original event's
+    // transition timestamp (sequence number form) so strict devices can
+    // match the ack against the pending transition.
+    let state = test_state(false);
+    let result = acknowledge_alarm_impl(
+        &state,
+        AcknowledgeAlarmParams {
+            device_instance: 1234,
+            object_type: "analog-input".into(),
+            object_instance: 1,
+            event_state_acknowledged: 2,
+            acknowledgment_source: "operator-test".into(),
+            acknowledging_process_identifier: 1,
+            transition_timestamp: Some("seq#42".into()),
+            dry_run: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(result.contains("[dry-run]"), "got: {result}");
+    assert!(
+        result.contains("seq#42"),
+        "ts must be echoed in dry-run: {result}"
+    );
+}
+
+#[tokio::test]
+async fn acknowledge_alarm_rejects_bad_transition_timestamp() {
+    let state = test_state(false);
+    let result = acknowledge_alarm_impl(
+        &state,
+        AcknowledgeAlarmParams {
+            device_instance: 1234,
+            object_type: "analog-input".into(),
+            object_instance: 1,
+            event_state_acknowledged: 2,
+            acknowledgment_source: "operator-test".into(),
+            acknowledging_process_identifier: 1,
+            transition_timestamp: Some("not-a-thing".into()),
+            dry_run: true,
+        },
+    )
+    .await;
+    assert!(result.is_err());
     let snap = state.audit.snapshot(0);
     assert_eq!(snap.len(), 1);
     assert_eq!(snap[0].decision, "deny");
@@ -161,6 +245,7 @@ async fn acknowledge_alarm_no_client_audits_then_errors() {
             event_state_acknowledged: 2,
             acknowledgment_source: "operator-test".into(),
             acknowledging_process_identifier: 1,
+            transition_timestamp: None,
             dry_run: false,
         },
     )
