@@ -2,6 +2,7 @@
 //!
 //! Exposes BACnet operations as MCP tools and network state as MCP resources.
 
+pub mod alarms;
 pub mod bulk;
 pub mod discovery;
 pub mod objects;
@@ -152,6 +153,38 @@ impl GatewayMcp {
         params: Parameters<bulk::DeviceCapabilitiesParams>,
     ) -> Result<String, String> {
         bulk::get_device_capabilities_impl(&self.state, params.0).await
+    }
+
+    // --- Alarm + event tools ---
+
+    #[tool(
+        description = "List active alarms on a remote device via the BACnet GetAlarmSummary service (ASHRAE 135-2020 Clause 13.7). Returns one line per alarm: object identifier, alarm state, and which transitions have already been acknowledged. Read-only. Use this as the cheap first call when triaging incidents; switch to get_event_information for richer per-event metadata."
+    )]
+    async fn get_alarm_summary(
+        &self,
+        params: Parameters<alarms::AlarmSummaryParams>,
+    ) -> Result<String, String> {
+        alarms::get_alarm_summary_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Read active events on a remote device via GetEventInformation (Clause 13.10). Modern replacement for GetAlarmSummary — returns timestamps for each transition (off-normal, fault, normal), notify type, event-enable bits, per-transition priorities, and notification class. Pass `after: 'type:instance'` to page when the device's response sets more_events. Read-only."
+    )]
+    async fn get_event_information(
+        &self,
+        params: Parameters<alarms::EventInformationParams>,
+    ) -> Result<String, String> {
+        alarms::get_event_information_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Acknowledge a pending event transition on a remote device (Clause 13.6). Pass the event's object identifier, the EventState being acked (raw enumerated: 0=normal, 1=fault, 2=offnormal, ...), and a free-text source identifier. Goes through the gateway's safety policy and audit log the same way write_property does. Pass `dry_run: true` to validate without sending the APDU."
+    )]
+    async fn acknowledge_alarm(
+        &self,
+        params: Parameters<alarms::AcknowledgeAlarmParams>,
+    ) -> Result<String, String> {
+        alarms::acknowledge_alarm_impl(&self.state, params.0).await
     }
 
     // --- Trend log tools (ReadRange-backed) ---

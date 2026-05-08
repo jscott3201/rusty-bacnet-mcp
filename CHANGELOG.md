@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — Phase 2: alarms + events + acknowledge_alarm
+
+Three new MCP tools for incident response. Together they answer the agentic question "what events are active on this device, and can I acknowledge a specific transition?" without an upstream COV/notification subscription.
+
+### Added — 3 new MCP tools
+
+- **`get_alarm_summary`** — One round-trip to ASHRAE 135-2020 Clause 13.7's GetAlarmSummary service. Returns one line per active alarm: object identifier, alarm state, and which transitions have already been acknowledged. The cheapest "what's wrong right now?" call. Read-only.
+- **`get_event_information`** — Modern replacement for alarm summary (Clause 13.10). Per-event payload includes timestamps for each transition (off-normal, fault, normal), notify type, event-enable bits, per-transition priorities, and notification class. Pass `after: 'type:instance'` to page when the device's response sets `more_events`. Read-only.
+- **`acknowledge_alarm`** — Acknowledge a pending event transition (Clause 13.6). Routed through the **same safety control plane** as `write_property` and `relinquish_at_priority`: `require_writable`, `WritePolicy::evaluate`, audit log entry on every path (deny / allow / dry-run / error). `dry_run: true` validates without sending the APDU.
+
+### Added — module + tests
+
+- **`src/mcp/alarms.rs`** — All three tools, two ack-transitions formatters (one for the legacy 3-bit BIT STRING from GetAlarmSummary, one for the byte-packed form on EventSummary), and a `BACnetTimeStamp` formatter covering Time / SequenceNumber / DateTime variants.
+- **4 unit tests** in `src/mcp/alarms.rs` covering ack-transition formatting and timestamp rendering.
+- **6 integration tests** in `tests/alarm_tests.rs` covering no-client paths for all three tools, pre-dispatch validation of the `after` paging cursor in `get_event_information`, and the audit pipeline for `acknowledge_alarm` (dry-run records allow, read-only records deny, no-client records error).
+
+### Changed
+
+- **Cargo.toml package version 0.6.0 → 0.7.0** plus the matching `Cargo.lock` update (per the standing rule — CI runs `--locked`).
+- **`get_event_information_impl` validates the paging cursor BEFORE touching the network layer.** Same pattern as `read_trend_log` from 0.6.0 — agents passing garbage in `after` get a clear "expected 'type:instance'" error rather than a generic "BACnet client not started".
+
+### Notes
+
+- `acknowledge_alarm` exposes the BACnet acknowledgment-source string verbatim — it appears in the *device's own* audit log, separate from the gateway's `bacnet://audit/recent` resource. Operators can identify which agent acked which alarm by passing a stable identifier (e.g. `"agent:claude-7"`).
+- A `bacnet://events/recent` rolling buffer driven by ConfirmedEventNotification subscriptions is intentionally deferred. It requires a server-side notification handler with stateful subscription tracking — the kind of work that should live in its own PR alongside ConfirmedCOVNotification handling. The three tools landed here cover the pull-side use case (operator triage) which is the more common agentic flow.
+
 ## [0.6.0] — Phase 2: trend-log tools (ReadRange-backed)
 
 Adds two MCP tools for working with BACnet TrendLog objects. Together they answer the agentic question "what is this trend logging, how much data does it have, and can I read a specific window?" without round-tripping through the lower-level read tools.
