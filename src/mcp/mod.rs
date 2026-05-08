@@ -2,6 +2,7 @@
 //!
 //! Exposes BACnet operations as MCP tools and network state as MCP resources.
 
+pub mod bulk;
 pub mod discovery;
 pub mod objects;
 pub mod properties;
@@ -98,6 +99,48 @@ impl GatewayMcp {
         params: Parameters<properties::WritePropertyParams>,
     ) -> Result<String, String> {
         properties::write_property_impl(&self.state, params.0).await
+    }
+
+    // --- Bulk read tools (RPM-backed) ---
+
+    #[tool(
+        description = "Read multiple properties from one or more objects on a remote BACnet device in a single round-trip via ReadPropertyMultiple. Cuts latency 5–10× over sequential read_property calls and is the primary tool for bulk discovery, override audits, and rich object snapshots. Use 'all' / 'required' / 'optional' as the property name to fetch every property the device exposes for that object."
+    )]
+    async fn read_property_multiple(
+        &self,
+        params: Parameters<bulk::ReadPropertyMultipleParams>,
+    ) -> Result<String, String> {
+        bulk::read_property_multiple_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Read the 16-slot priority array, present-value, and relinquish-default for a commandable BACnet object in one round-trip. Identifies the highest active priority slot — answers 'who is overriding this point?' which is the central question for override audits and remediation workflows."
+    )]
+    async fn read_priority_array(
+        &self,
+        params: Parameters<bulk::ReadPriorityArrayParams>,
+    ) -> Result<String, String> {
+        bulk::read_priority_array_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "List every BACnet object on a remote device with its identifier and object-name, by reading Device.object_list and then chunked object-name reads via RPM. Returns up to `limit` objects (default 500, hard cap 5000). Useful as the first step in any whole-device audit or schema-aware tool flow."
+    )]
+    async fn enumerate_objects(
+        &self,
+        params: Parameters<bulk::EnumerateObjectsParams>,
+    ) -> Result<String, String> {
+        bulk::enumerate_objects_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Read a remote device's capability profile in one RPM round-trip: vendor info, firmware/protocol revisions, max APDU, segmentation support, services-supported bitstring, object-types-supported bitstring. Lets an agent reason about which BACnet services and object types are actually available before it tries to call them."
+    )]
+    async fn get_device_capabilities(
+        &self,
+        params: Parameters<bulk::DeviceCapabilitiesParams>,
+    ) -> Result<String, String> {
+        bulk::get_device_capabilities_impl(&self.state, params.0).await
     }
 
     // --- Local object tools ---

@@ -5,6 +5,7 @@
 
 use bacnet_mcp::config::{DeviceConfig, GatewayConfig, McpConfig, TransportsConfig};
 use bacnet_mcp::mcp::GatewayMcp;
+use bacnet_mcp::mcp::bulk;
 use bacnet_mcp::mcp::discovery;
 use bacnet_mcp::mcp::objects;
 use bacnet_mcp::mcp::reference;
@@ -173,6 +174,95 @@ async fn mcp_discover_devices_no_client() {
     )
     .await;
 
+    assert!(result.unwrap_err().contains("not started"));
+}
+
+// --- Bulk read tools (RPM-backed) ---
+
+#[tokio::test]
+async fn rpm_empty_objects_rejected_pre_dispatch() {
+    // Empty `objects` is a parameter error; we must not even attempt to
+    // contact the (absent) BACnet client.
+    let state = test_state();
+    let result = bulk::read_property_multiple_impl(
+        &state,
+        bulk::ReadPropertyMultipleParams {
+            device_instance: 1234,
+            objects: vec![],
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("at least one"),
+        "expected pre-dispatch validation error, got: {err}"
+    );
+    assert!(
+        !err.contains("client not started"),
+        "validation must precede client check, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn rpm_no_client_after_validation() {
+    let state = test_state();
+    let result = bulk::read_property_multiple_impl(
+        &state,
+        bulk::ReadPropertyMultipleParams {
+            device_instance: 1234,
+            objects: vec![bulk::ObjectRequest {
+                object_type: "analog-input".into(),
+                object_instance: 1,
+                properties: vec![bulk::PropertyRequest {
+                    property: "present-value".into(),
+                    array_index: None,
+                }],
+            }],
+        },
+    )
+    .await;
+    assert!(result.unwrap_err().contains("not started"));
+}
+
+#[tokio::test]
+async fn read_priority_array_no_client() {
+    let state = test_state();
+    let result = bulk::read_priority_array_impl(
+        &state,
+        bulk::ReadPriorityArrayParams {
+            device_instance: 1234,
+            object_type: "analog-output".into(),
+            object_instance: 1,
+        },
+    )
+    .await;
+    assert!(result.unwrap_err().contains("not started"));
+}
+
+#[tokio::test]
+async fn enumerate_objects_no_client() {
+    let state = test_state();
+    let result = bulk::enumerate_objects_impl(
+        &state,
+        bulk::EnumerateObjectsParams {
+            device_instance: 1234,
+            limit: None,
+        },
+    )
+    .await;
+    assert!(result.unwrap_err().contains("not started"));
+}
+
+#[tokio::test]
+async fn get_device_capabilities_no_client() {
+    let state = test_state();
+    let result = bulk::get_device_capabilities_impl(
+        &state,
+        bulk::DeviceCapabilitiesParams {
+            device_instance: 1234,
+        },
+    )
+    .await;
     assert!(result.unwrap_err().contains("not started"));
 }
 
