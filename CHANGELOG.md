@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — Phase 2: layered safety control plane + audit log + relinquish
+
+This release lands the **write-side safety control plane** that Phase 2 was waiting on. Every write tool now consults a hot-swappable `WritePolicy` before encoding a BACnet APDU and emits one append-only `AuditEntry` (allow / deny / dry-run / error) regardless of outcome. A `dry_run` parameter lets agents pre-flight a write through the full policy + audit pipeline without touching the wire.
+
+### Added — safety control plane
+
+- **`src/safety.rs`** — `WritePolicy` with object-type allow/deny lists, per-object allow/deny lists, and BACnet command-priority caps. Conservative defaults: `LIFE_SAFETY_POINT` / `LIFE_SAFETY_ZONE` / `NOTIFICATION_CLASS` denied; `device:0` always denied (reserved per ASHRAE 135-2020); `min_priority = 9` so priorities 1–8 (life-safety / manual-life-safety / safety equipment) can never be taken by an agent.
+- **`mcp.safety` config block** — `allow_object_types`, `deny_object_types`, `allow_objects`, `deny_objects`, `min_priority`, `max_priority`. Every field optional; missing fields fall back to `default_safe()` field-by-field. Operators only override what they want to relax.
+- **Hot-swap via `ArcSwap`** — `LivePolicy = ArcSwap<WritePolicy>` lives in `RuntimeFlags`. F9 reload replaces the policy atomically; in-flight writes see the new value on their next `.load_full()`. The TUI's reload classifier marks `mcp.safety` as `Applied` (no restart needed).
+
+### Added — audit log
+
+- **`src/audit.rs`** — `AuditLog` is a bounded ring buffer (default 5000 entries, configurable via `mcp.audit.capacity`) with optional JSON-Lines file mirror (`mcp.audit.path`). The audit write happens **before** the BACnet round-trip so a crash mid-flight still leaves a record of intent.
+- **`bacnet://audit/recent`** MCP resource — surfaces the last 100 audit entries to agents and operators in human-readable form. Format is grep-friendly: `epoch+SECS.MMM <decision> <tool> <target> <property> [pri=N] [dry-run] reason`.
+- File path / capacity is restart-required (the file handle and buffer cap are bound at startup); the TUI classifier marks `mcp.audit` as `Stale`.
+
+### Added — write tools
+
+- **`dry_run` parameter** on `write_property` and `write_local_property`. When true, the call runs the full policy gate and writes an audit entry but never encodes a WriteProperty APDU. Agents use this to validate intent before taking real action.
+- **`relinquish_at_priority`** tool — releases a priority slot on a commandable BACnet object by writing NULL at that priority. The object falls back to the next-highest active priority (or to `relinquish-default`). Distinct from `write_property` because the wire encoding is fixed (NULL), so agents can't accidentally write a stale value while trying to release a priority. Subject to the same safety policy.
+
+### Added — tests
+
+15 new tests bring the total to 85 passing:
+- `src/safety.rs` — 8 unit tests covering defaults, device:0 hard-block, priority floor, allow/deny precedence, and disabled-cap modes.
+- `src/audit.rs` — 4 unit tests covering ring-buffer eviction, snapshot windows, and JSON-Lines file append.
+- `tests/mcp_tests.rs` — 6 integration tests covering the dry-run path (records audit, skips DB), life-safety denial (records audit, errors), `relinquish_at_priority` allow + deny + dry-run, and the type-allowlist override.
+
+### Changed
+
+- **`RuntimeFlags::from_config` / `apply` now return `Result<_, String>`** — a malformed `mcp.safety` block fails loudly at boot or hot-reload instead of silently dropping back to defaults. The TUI reload path surfaces the error and leaves live state untouched.
+- **`GatewayState` gains `audit: Arc<AuditLog>`** field. New `try_new_with_stack(...)` returns `Result<Self, String>` so binaries surface safety-config errors before any sockets bind; the existing `new_with_stack` wraps it with `expect()` for backward compatibility with test fixtures.
+- **`parking_lot` promoted to a base dep** (was `tui`-only). The audit log uses `parking_lot::Mutex`; the dep is small and avoids gating the audit module behind `tui`.
+
+### Notes
+
+- `write_property_multiple` (full WPM service) is intentionally deferred to a follow-up PR — it shares the same control-plane gate, so landing the gate first means WPM is a small, focused change against an already-validated foundation.
+- File-size cap (700 LOC non-comment / non-empty per file) verified clean. New files: `safety.rs` and `audit.rs`. Touched files: `config.rs`, `state.rs`, `lib.rs`, `mcp/properties.rs`, `mcp/objects.rs`, `mcp/mod.rs`, `mcp/reference/mod.rs`, `tui/mod.rs`.
+
 ## [0.4.0] — Phase 2 begins: bulk-read tools (RPM-backed)
 
 First slice of Phase 2 (MCP feature expansion). Lands ReadPropertyMultiple as foundational infrastructure plus three convenience tools that share it. Together these unlock the **override audit lighthouse demo** ("find all overridden points across N devices, group by source priority").

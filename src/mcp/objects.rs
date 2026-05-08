@@ -5,10 +5,12 @@ use serde::Deserialize;
 
 use bacnet_types::primitives::ObjectIdentifier;
 
+use crate::audit::AuditEntry;
 use crate::parse::{
     object_type_name, parse_object_type, parse_property_name, property_name,
     property_value_to_json_with_context,
 };
+use crate::safety::PolicyDecision;
 use crate::state::GatewayState;
 
 /// Parameters for list_local_objects tool.
@@ -50,6 +52,13 @@ pub struct WriteLocalPropertyParams {
     /// Value to write.
     #[schemars(description = "Value to write: number, boolean, string, or null")]
     pub value: serde_json::Value,
+    /// Dry-run mode. When true, runs all safety checks and records an audit
+    /// entry but does not mutate the local DB.
+    #[schemars(
+        description = "If true, validate against policy + audit but do not actually mutate the local DB (default false)"
+    )]
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 pub async fn list_local_objects_impl(
@@ -147,25 +156,51 @@ pub async fn write_local_property_impl(
     params: WriteLocalPropertyParams,
 ) -> Result<String, String> {
     state.require_writable()?;
-    let obj_type = match parse_object_type(&params.object_type) {
-        Ok(t) => t,
-        Err(e) => return Err(e),
-    };
 
-    let property = match parse_property_name(&params.property) {
-        Ok(p) => p,
-        Err(e) => return Err(e),
-    };
+    let obj_type = parse_object_type(&params.object_type)?;
+    let property = parse_property_name(&params.property)?;
+    let oid =
+        ObjectIdentifier::new(obj_type, params.object_instance).map_err(|e| format!("{e}"))?;
+    let target_str = format!("{}:{}", object_type_name(obj_type), params.object_instance);
 
-    let value = match crate::parse::json_to_property_value(&params.value) {
-        Ok(v) => v,
-        Err(e) => return Err(format!("Error parsing value: {e}")),
-    };
+    // Local writes go through the same policy gate as remote writes — agents
+    // shouldn't be able to bypass life-safety denials by targeting the
+    // gateway's own DB. Local writes don't carry a priority (the local DB
+    // doesn't model the priority array), so we evaluate with priority=None
+    // which means the priority caps don't fire.
+    if let PolicyDecision::Deny(reason) = state.flags.policy().evaluate(oid, None) {
+        state.audit.append(AuditEntry::now(
+            "write_local_property",
+            Some(target_str),
+            Some(property_name(property).to_string()),
+            None,
+            params.dry_run,
+            "deny",
+            reason.clone(),
+        ));
+        return Err(format!("Policy denied: {reason}"));
+    }
 
-    let oid = match ObjectIdentifier::new(obj_type, params.object_instance) {
-        Ok(o) => o,
-        Err(e) => return Err(format!("{e}")),
-    };
+    let value = crate::parse::json_to_property_value(&params.value)
+        .map_err(|e| format!("Error parsing value: {e}"))?;
+
+    if params.dry_run {
+        state.audit.append(AuditEntry::now(
+            "write_local_property",
+            Some(target_str.clone()),
+            Some(property_name(property).to_string()),
+            None,
+            true,
+            "allow",
+            String::new(),
+        ));
+        return Ok(format!(
+            "[dry-run] Would write {} to local {} {}",
+            params.value,
+            target_str,
+            property_name(property),
+        ));
+    }
 
     let mut db = state.db.write().await;
     let obj = match db.get_mut(&oid) {
@@ -179,14 +214,36 @@ pub async fn write_local_property_impl(
     };
 
     match obj.write_property(property, None, value, None) {
-        Ok(()) => Ok(format!(
-            "Successfully wrote {} to local {}:{} {}",
-            params.value,
-            object_type_name(obj_type),
-            params.object_instance,
-            property_name(property),
-        )),
-        Err(e) => Err(format!("Error writing property: {e}")),
+        Ok(()) => {
+            state.audit.append(AuditEntry::now(
+                "write_local_property",
+                Some(target_str.clone()),
+                Some(property_name(property).to_string()),
+                None,
+                false,
+                "allow",
+                String::new(),
+            ));
+            Ok(format!(
+                "Successfully wrote {} to local {} {}",
+                params.value,
+                target_str,
+                property_name(property),
+            ))
+        }
+        Err(e) => {
+            let err_msg = format!("{e}");
+            state.audit.append(AuditEntry::now(
+                "write_local_property",
+                Some(target_str),
+                Some(property_name(property).to_string()),
+                None,
+                false,
+                "error",
+                err_msg.clone(),
+            ));
+            Err(format!("Error writing property: {err_msg}"))
+        }
     }
 }
 

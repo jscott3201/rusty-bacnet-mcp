@@ -118,6 +118,7 @@ async fn mcp_write_and_read_local_property() {
             object_instance: 1,
             property: "present-value".to_string(),
             value: serde_json::json!(42.0),
+            dry_run: false,
         },
     )
     .await;
@@ -356,6 +357,241 @@ async fn mcp_delete_device_object_rejected() {
     assert!(result.unwrap_err().to_lowercase().contains("cannot delete"));
 }
 
+// --- Safety control plane + audit log ---
+
+#[tokio::test]
+async fn local_write_dry_run_records_allow_audit_and_skips_db_mutation() {
+    let state = test_state();
+
+    // Read the original value first.
+    let before = objects::read_local_property_impl(
+        &state,
+        objects::ReadLocalPropertyParams {
+            object_type: "analog-value".to_string(),
+            object_instance: 1,
+            property: "present-value".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Dry-run write — must report allow + audit, but DB stays untouched.
+    let result = objects::write_local_property_impl(
+        &state,
+        objects::WriteLocalPropertyParams {
+            object_type: "analog-value".to_string(),
+            object_instance: 1,
+            property: "present-value".to_string(),
+            value: serde_json::json!(123.0),
+            dry_run: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(result.contains("[dry-run]"), "got: {result}");
+
+    // DB unchanged.
+    let after = objects::read_local_property_impl(
+        &state,
+        objects::ReadLocalPropertyParams {
+            object_type: "analog-value".to_string(),
+            object_instance: 1,
+            property: "present-value".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(before, after, "dry-run must not mutate the local DB");
+
+    // Audit entry recorded with allow + dry_run flags.
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].decision, "allow");
+    assert!(snap[0].dry_run);
+    assert_eq!(snap[0].tool, "write_local_property");
+}
+
+#[tokio::test]
+async fn write_to_life_safety_type_is_denied_and_audited() {
+    use bacnet_mcp::config::SafetyConfig;
+
+    // Build a config with the default safety policy (life-safety types denied).
+    // Test the local-write path because it doesn't need a network client.
+    let mut cfg = test_config();
+    cfg.mcp.safety = Some(SafetyConfig::default());
+
+    let mut db = bacnet_objects::database::ObjectDatabase::new();
+    let device = bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
+        instance: 1234,
+        name: "Test Gateway".into(),
+        vendor_id: 999,
+        ..bacnet_objects::device::DeviceConfig::default()
+    })
+    .unwrap();
+    db.add(Box::new(device)).unwrap();
+
+    let state = bacnet_mcp::state::GatewayState::new(db, cfg);
+
+    let result = objects::write_local_property_impl(
+        &state,
+        objects::WriteLocalPropertyParams {
+            object_type: "notification-class".to_string(),
+            object_instance: 1,
+            property: "priority".to_string(),
+            value: serde_json::json!(5),
+            dry_run: false,
+        },
+    )
+    .await;
+
+    let err = result.unwrap_err();
+    assert!(err.contains("Policy denied"), "got: {err}");
+    assert!(
+        err.to_lowercase().contains("notification-class"),
+        "got: {err}"
+    );
+
+    // The denial is recorded in the audit log.
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].decision, "deny");
+    assert!(!snap[0].dry_run);
+}
+
+#[tokio::test]
+async fn relinquish_no_client_audits_then_errors() {
+    use bacnet_mcp::mcp::properties::{RelinquishParams, relinquish_at_priority_impl};
+
+    let state = test_state();
+
+    // dry_run = false but no client → should error AFTER policy passes.
+    // Policy passes (analog-output:1 + priority 10 is allowed by default),
+    // so we expect "not started" not "Policy denied".
+    let result = relinquish_at_priority_impl(
+        &state,
+        RelinquishParams {
+            device_instance: 1234,
+            object_type: "analog-output".into(),
+            object_instance: 1,
+            property: "present-value".into(),
+            priority: 10,
+            dry_run: false,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("not started"), "got: {err}");
+}
+
+#[tokio::test]
+async fn relinquish_dry_run_records_allow_audit() {
+    use bacnet_mcp::mcp::properties::{RelinquishParams, relinquish_at_priority_impl};
+
+    let state = test_state();
+    let result = relinquish_at_priority_impl(
+        &state,
+        RelinquishParams {
+            device_instance: 1234,
+            object_type: "analog-output".into(),
+            object_instance: 1,
+            property: "present-value".into(),
+            priority: 10,
+            dry_run: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(result.contains("[dry-run]"), "got: {result}");
+
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].tool, "relinquish_at_priority");
+    assert_eq!(snap[0].decision, "allow");
+    assert!(snap[0].dry_run);
+    assert_eq!(snap[0].priority, Some(10));
+}
+
+#[tokio::test]
+async fn relinquish_below_priority_floor_is_denied() {
+    use bacnet_mcp::mcp::properties::{RelinquishParams, relinquish_at_priority_impl};
+
+    let state = test_state();
+    // Default min_priority = 9. Priority 5 should be denied.
+    let result = relinquish_at_priority_impl(
+        &state,
+        RelinquishParams {
+            device_instance: 1234,
+            object_type: "analog-output".into(),
+            object_instance: 1,
+            property: "present-value".into(),
+            priority: 5,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("Policy denied"), "got: {err}");
+    assert!(err.contains("floor"), "got: {err}");
+
+    let snap = state.audit.snapshot(0);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].decision, "deny");
+}
+
+#[tokio::test]
+async fn allow_object_types_overrides_default_allow_list() {
+    use bacnet_mcp::config::SafetyConfig;
+
+    let mut cfg = test_config();
+    cfg.mcp.safety = Some(SafetyConfig {
+        allow_object_types: Some(vec!["analog-value".into()]),
+        ..SafetyConfig::default()
+    });
+
+    let mut db = bacnet_objects::database::ObjectDatabase::new();
+    let device = bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
+        instance: 1234,
+        name: "Test Gateway".into(),
+        vendor_id: 999,
+        ..bacnet_objects::device::DeviceConfig::default()
+    })
+    .unwrap();
+    db.add(Box::new(device)).unwrap();
+    let av = AnalogValueObject::new(1, "Test AV", 95).unwrap();
+    db.add(Box::new(av)).unwrap();
+    let state = bacnet_mcp::state::GatewayState::new(db, cfg);
+
+    // Allowed type → write succeeds.
+    let ok = objects::write_local_property_impl(
+        &state,
+        objects::WriteLocalPropertyParams {
+            object_type: "analog-value".into(),
+            object_instance: 1,
+            property: "present-value".into(),
+            value: serde_json::json!(7.0),
+            dry_run: true,
+        },
+    )
+    .await;
+    assert!(ok.is_ok(), "got: {ok:?}");
+
+    // Not on the allow list → denied.
+    let denied = objects::write_local_property_impl(
+        &state,
+        objects::WriteLocalPropertyParams {
+            object_type: "binary-value".into(),
+            object_instance: 1,
+            property: "present-value".into(),
+            value: serde_json::json!(true),
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = denied.unwrap_err();
+    assert!(err.contains("Policy denied"), "got: {err}");
+    assert!(err.contains("type allowlist"), "got: {err}");
+}
+
 // --- Reference resources ---
 
 #[test]
@@ -374,10 +610,22 @@ fn reference_resources_list() {
 #[test]
 fn state_resources_list() {
     let resources = reference::state_resources();
-    assert_eq!(resources.len(), 3);
-    for r in &resources {
-        assert!(r.uri.starts_with("bacnet://state/"), "bad URI: {}", r.uri);
-    }
+    assert_eq!(resources.len(), 4);
+    let prefixes: Vec<&str> = resources
+        .iter()
+        .map(|r| {
+            if r.uri.starts_with("bacnet://state/") {
+                "state"
+            } else if r.uri.starts_with("bacnet://audit/") {
+                "audit"
+            } else {
+                "other"
+            }
+        })
+        .collect();
+    assert!(prefixes.iter().filter(|p| **p == "state").count() == 3);
+    assert!(prefixes.iter().filter(|p| **p == "audit").count() == 1);
+    assert!(!prefixes.contains(&"other"));
 }
 
 #[test]
