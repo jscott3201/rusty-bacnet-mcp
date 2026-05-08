@@ -17,6 +17,7 @@
 //! - `builder` — constructs the BACnet stack from config
 //! - `parse` — BACnet value parsing and formatting utilities
 
+pub mod audit;
 #[cfg(feature = "mcp")]
 pub mod auth;
 pub mod builder;
@@ -24,6 +25,7 @@ pub mod config;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod parse;
+pub mod safety;
 pub mod state;
 #[cfg(feature = "tui")]
 pub mod tui;

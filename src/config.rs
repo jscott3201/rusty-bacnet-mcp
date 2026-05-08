@@ -51,6 +51,15 @@ pub struct McpConfig {
     /// and this block are missing a bind address, startup fails.
     #[serde(default)]
     pub http: Option<McpHttpConfig>,
+    /// Layered safety policy for write operations. Missing block = conservative
+    /// defaults (life-safety object types denied, priorities 1–8 reserved,
+    /// `device:0` always denied). See `crate::safety::WritePolicy`.
+    #[serde(default)]
+    pub safety: Option<SafetyConfig>,
+    /// Audit log configuration. Missing block = in-memory ring buffer only,
+    /// surfaced via the `bacnet://audit/recent` MCP resource.
+    #[serde(default)]
+    pub audit: Option<AuditConfig>,
 }
 
 impl Default for McpConfig {
@@ -59,8 +68,64 @@ impl Default for McpConfig {
             api_key: None,
             read_only: default_read_only(),
             http: None,
+            safety: None,
+            audit: None,
         }
     }
+}
+
+/// Layered safety policy for write operations.
+///
+/// Every field is optional; missing fields fall back to the conservative
+/// defaults baked into `WritePolicy::default_safe()`. Operators only override
+/// what they want to relax — they never have to redeclare the safe baseline.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SafetyConfig {
+    /// Object-type allowlist. When set, only writes targeting these types are
+    /// permitted. Names are the kebab-case forms accepted by `parse_object_type`
+    /// (e.g. `"analog-output"`, `"binary-value"`). Vendor types are written
+    /// as `"vendor-N"` where N is the proprietary type id.
+    #[serde(default)]
+    pub allow_object_types: Option<Vec<String>>,
+    /// Object-type denylist. Defaults to life-safety types
+    /// (`life-safety-point`, `life-safety-zone`, `notification-class`).
+    /// Setting this to an empty array (`[]`) explicitly disables type denial.
+    #[serde(default)]
+    pub deny_object_types: Option<Vec<String>>,
+    /// Per-object allowlist. Each entry is a `"<type>:<instance>"` pair (e.g.
+    /// `"analog-output:42"`).
+    #[serde(default)]
+    pub allow_objects: Option<Vec<String>>,
+    /// Per-object denylist. `"device:0"` is always denied regardless of this
+    /// field — it's an undefined target for WriteProperty.
+    #[serde(default)]
+    pub deny_objects: Option<Vec<String>>,
+    /// Minimum BACnet command priority a write may target. Default `9` blocks
+    /// priorities 1–8 (life-safety / manual-life-safety per ASHRAE 135-2020
+    /// Table 19-1). Set to `1` to disable the floor entirely.
+    #[serde(default)]
+    pub min_priority: Option<u8>,
+    /// Maximum priority. Default `16`. Operators rarely need to set this.
+    #[serde(default)]
+    pub max_priority: Option<u8>,
+}
+
+/// Audit log configuration.
+///
+/// The in-memory ring buffer is always present (it's the surface for the
+/// `bacnet://audit/recent` MCP resource). The optional `path` mirrors every
+/// entry to a JSON-Lines file so the log survives daemon restarts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct AuditConfig {
+    /// Ring-buffer capacity. Default 5000 entries. Older entries evict on
+    /// insert past the cap.
+    #[serde(default)]
+    pub capacity: Option<usize>,
+    /// Optional path to a JSON-Lines file. The file is opened append-only on
+    /// each write — no file handle is held across operations, so log rotation
+    /// (e.g. via `logrotate`) works without the daemon noticing.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 fn default_read_only() -> bool {
@@ -324,6 +389,45 @@ impl GatewayConfig {
                     message: format!("duplicate network number {num}"),
                 });
             }
+        }
+
+        // Safety policy validation. Catches malformed `mcp.safety` blocks at
+        // config load instead of at the first MCP write call. This is also
+        // the place that pins BACnet's 1–16 priority range — Codex P2 in
+        // PR #3 review flagged that out-of-range values were silently
+        // accepted before this check landed.
+        if let Some(safety) = &self.mcp.safety {
+            if let Some(min) = safety.min_priority {
+                if !(1..=16).contains(&min) {
+                    return Err(ConfigError {
+                        message: format!(
+                            "mcp.safety.min_priority {min} is out of BACnet range 1..=16"
+                        ),
+                    });
+                }
+            }
+            if let Some(max) = safety.max_priority {
+                if !(1..=16).contains(&max) {
+                    return Err(ConfigError {
+                        message: format!(
+                            "mcp.safety.max_priority {max} is out of BACnet range 1..=16"
+                        ),
+                    });
+                }
+            }
+            if let (Some(min), Some(max)) = (safety.min_priority, safety.max_priority) {
+                if min > max {
+                    return Err(ConfigError {
+                        message: format!(
+                            "mcp.safety.min_priority ({min}) must be ≤ max_priority ({max})"
+                        ),
+                    });
+                }
+            }
+            // Build the policy once at validate-time so type/object name
+            // parse errors fail loudly here rather than at hot-reload.
+            crate::safety::WritePolicy::from_config(safety)
+                .map_err(|message| ConfigError { message })?;
         }
 
         // Routes can only target known transports.

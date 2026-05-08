@@ -92,13 +92,23 @@ impl GatewayMcp {
     }
 
     #[tool(
-        description = "Write a value to a property on a remote BACnet device. Specify the device, object, property, value, and optionally a command priority (1-16)."
+        description = "Write a value to a property on a remote BACnet device. Pass `dry_run: true` to validate against the gateway's safety policy and write an audit entry without sending the WriteProperty APDU. The layered policy enforces object-type allow/deny lists, per-object lists, and a priority floor (default 9 — priorities 1–8 are reserved for life-safety per ASHRAE 135-2020)."
     )]
     async fn write_property(
         &self,
         params: Parameters<properties::WritePropertyParams>,
     ) -> Result<String, String> {
         properties::write_property_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Release a priority slot on a commandable BACnet object by writing NULL at that priority. The object falls back to the next-highest active priority — or to relinquish-default if no other slots are taken. Subject to the same safety policy as write_property."
+    )]
+    async fn relinquish_at_priority(
+        &self,
+        params: Parameters<properties::RelinquishParams>,
+    ) -> Result<String, String> {
+        properties::relinquish_at_priority_impl(&self.state, params.0).await
     }
 
     // --- Bulk read tools (RPM-backed) ---
@@ -235,6 +245,21 @@ impl GatewayMcp {
                 }
                 Some(result)
             }
+            "bacnet://audit/recent" => {
+                // Last 100 entries by default. Truncate to keep the resource
+                // readable; bigger windows fetch via the JSON-Lines file
+                // (mcp.audit.path) once the operator wires one up.
+                let entries = self.state.audit.snapshot(100);
+                let mut out = format!(
+                    "{} audit entr{} (most recent last):\n",
+                    entries.len(),
+                    if entries.len() == 1 { "y" } else { "ies" }
+                );
+                for e in &entries {
+                    out.push_str(&format_audit_line(e));
+                }
+                Some(out)
+            }
             "bacnet://state/config" => {
                 let config = &self.state.config;
                 let mut result = String::new();
@@ -363,4 +388,30 @@ impl ServerHandler for GatewayMcp {
             ))
         }
     }
+}
+
+/// Render one audit entry as a single line for the `bacnet://audit/recent`
+/// resource. Format is human-readable and stable enough to grep:
+/// `<iso-timestamp> <decision> <tool> <target> <property> [pri=N] [dry-run] reason`
+fn format_audit_line(e: &crate::audit::AuditEntry) -> String {
+    let secs = (e.at_ms / 1000) as i64;
+    let ms = (e.at_ms % 1000) as u32;
+    // Best-effort RFC3339-ish stamp without pulling chrono in. The number is
+    // already epoch-millis so anyone who needs a real timestamp can reparse.
+    let ts = format!("epoch+{secs}.{ms:03}");
+
+    let target = e.target.as_deref().unwrap_or("-");
+    let property = e.property.as_deref().unwrap_or("-");
+    let pri = e.priority.map(|p| format!(" pri={p}")).unwrap_or_default();
+    let dry = if e.dry_run { " dry-run" } else { "" };
+    let reason = if e.reason.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", e.reason)
+    };
+    format!(
+        "  {ts} {decision:>5} {tool} {target} {property}{pri}{dry}{reason}\n",
+        decision = e.decision,
+        tool = e.tool,
+    )
 }

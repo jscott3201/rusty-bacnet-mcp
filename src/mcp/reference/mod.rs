@@ -77,6 +77,11 @@ pub fn state_resources() -> Vec<Resource> {
             "Gateway Configuration",
             "Current gateway configuration (sanitized, no secrets)",
         ),
+        resource(
+            "bacnet://audit/recent",
+            "Recent Write Audit Log",
+            "Append-only log of write attempts (allow / deny / dry-run / error). Surfaces the gateway's safety control plane to agents and operators — every write_property, write_local_property, and relinquish_at_priority call lands here.",
+        ),
     ]
 }
 

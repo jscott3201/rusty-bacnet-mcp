@@ -287,6 +287,12 @@ pub fn reload_safety_check(old: &GatewayConfig, new: &GatewayConfig) -> ReloadOu
     if old.mcp.read_only != new.mcp.read_only {
         applied.push("mcp.read_only");
     }
+    if old.mcp.safety != new.mcp.safety {
+        // Whole `safety` block is hot-swappable via ArcSwap. Tracking
+        // sub-fields individually doesn't add value — the block deserializes
+        // to a single `WritePolicy` that gets atomically replaced.
+        applied.push("mcp.safety");
+    }
 
     // ── Stale until restart ─────────────────────────────────────────────
     if old.mcp.api_key != new.mcp.api_key {
@@ -321,6 +327,13 @@ pub fn reload_safety_check(old: &GatewayConfig, new: &GatewayConfig) -> ReloadOu
     }
     if old.objects != new.objects {
         stale.push("objects (local DB pre-populated at boot)");
+    }
+    if old.mcp.audit != new.mcp.audit {
+        // Audit log is a per-startup file handle. Path / capacity changes
+        // require a restart to take effect — the in-memory ring buffer would
+        // otherwise have to be drained-and-reopened mid-flight, which loses
+        // entries.
+        stale.push("mcp.audit (audit log file/capacity bound at startup)");
     }
 
     if stale.is_empty() {
@@ -370,8 +383,16 @@ async fn do_save_and_reload(app: &mut App) {
     app.configure.disk_text = text;
 
     // 4. Apply hot-safe live changes. The atomic swap happens here; in-flight
-    //    MCP tool calls see the new value on their next read.
-    app.gateway.flags.apply(&parsed);
+    //    MCP tool calls see the new value on their next read. If the safety
+    //    block is malformed, surface the error and skip the apply — the file
+    //    has already been written so the next restart picks it up, but live
+    //    state stays on the previous policy.
+    if let Err(e) = app.gateway.flags.apply(&parsed) {
+        let msg = format!("safety policy invalid (live state unchanged): {e}");
+        app.configure.record_error(msg.clone());
+        app.toast = Some((std::time::Instant::now(), StatusKind::Err, msg));
+        return;
+    }
 
     // 5. Update the TUI's runtime view so it reflects what's actually live.
     //
@@ -612,6 +633,8 @@ mod reload_tests {
                 http: Some(McpHttpConfig {
                     bind: "127.0.0.1:3000".into(),
                 }),
+                safety: None,
+                audit: None,
             },
             device: DeviceConfig {
                 instance: 389001,
@@ -753,13 +776,52 @@ mod reload_tests {
         // classifier promised. If the bucketing diverges from apply's behavior,
         // this test catches it.
         let config = baseline();
-        let flags = crate::state::RuntimeFlags::from_config(&config);
+        let flags = crate::state::RuntimeFlags::from_config(&config).unwrap();
         assert!(flags.is_read_only());
 
         let mut next = baseline();
         next.mcp.read_only = false;
-        flags.apply(&next);
+        flags.apply(&next).unwrap();
         assert!(!flags.is_read_only());
+    }
+
+    #[test]
+    fn runtime_flags_apply_is_atomic_on_safety_parse_failure() {
+        // Codex P1 (PR #3 review): a malformed `mcp.safety` block must NOT
+        // mutate `read_only` mid-reload. Before the fix, `apply` stored the
+        // new `read_only` first and only then tried to parse the policy —
+        // a parse error returned `Err` with `read_only` already flipped.
+        let config = baseline(); // read_only = true
+        let flags = crate::state::RuntimeFlags::from_config(&config).unwrap();
+        assert!(flags.is_read_only());
+        let policy_before = std::sync::Arc::as_ptr(&flags.policy());
+
+        // Construct a config that flips read_only AND has an invalid
+        // safety block. Both fields are classified as Applied; before the
+        // fix, read_only would commit before the policy parse fails.
+        let mut bad = baseline();
+        bad.mcp.read_only = false;
+        bad.mcp.safety = Some(crate::config::SafetyConfig {
+            min_priority: Some(99), // out of BACnet 1..=16 range
+            ..crate::config::SafetyConfig::default()
+        });
+
+        let err = flags.apply(&bad).unwrap_err();
+        assert!(
+            err.contains("min_priority") || err.contains("99"),
+            "expected priority-range error, got: {err}"
+        );
+        // read_only must still be true (its pre-apply value).
+        assert!(
+            flags.is_read_only(),
+            "read_only must not flip when safety parse fails"
+        );
+        // policy must be the same Arc instance (unchanged).
+        let policy_after = std::sync::Arc::as_ptr(&flags.policy());
+        assert_eq!(
+            policy_before, policy_after,
+            "policy Arc must not swap when parse fails"
+        );
     }
 
     #[test]
