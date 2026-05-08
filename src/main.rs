@@ -170,8 +170,16 @@ async fn run_daemon(cli: Cli, config: GatewayConfig) -> Result<(), Box<dyn std::
     tracing::info!("BACnet server started on MAC {:02x?}", built.server_mac);
 
     let shutdown = CancellationToken::new();
+    // stdio-alone: the daemon was spawned as a child by an MCP client and
+    // should exit on stdin close. With HTTP also running, a stdio disconnect
+    // must not cascade — HTTP clients keep going.
+    let cancel_stdio_on_disconnect = !cli.transport.includes_http();
     let stdio_handle = if cli.transport.includes_stdio() {
-        Some(spawn_stdio_server(built.state.clone(), shutdown.clone()))
+        Some(spawn_stdio_server(
+            built.state.clone(),
+            shutdown.clone(),
+            cancel_stdio_on_disconnect,
+        ))
     } else {
         None
     };
@@ -234,9 +242,17 @@ async fn run_tui(cli: Cli, mut config: GatewayConfig) -> Result<(), Box<dyn std:
     // terminal owns stdout. If the user explicitly disabled HTTP, the TUI runs
     // alone with no outside MCP surface.
     let want_http = !cli.no_http;
-    if want_http && resolved_http_bind(&config, &cli).is_none() {
-        // Auto-enable HTTP at the default bind so the TUI is always useful.
-        config.mcp.http = Some(bacnet_mcp::config::McpHttpConfig::default());
+    if want_http {
+        // Reconcile the in-memory config with whatever bind we'll actually
+        // listen on (CLI > config > default), so the Observe tab's status
+        // panel and `bacnet://state/config` resource report the truth instead
+        // of saying HTTP is "not configured" while it's actively listening.
+        let bind = resolved_http_bind(&config, &cli).unwrap_or_else(default_http_bind_string);
+        config.mcp.http = Some(bacnet_mcp::config::McpHttpConfig { bind });
+    } else {
+        // Strip mcp.http from the live view so status display matches the
+        // operator's `--no-http` intent even if the file still has the block.
+        config.mcp.http = None;
     }
 
     let log_buffer = bacnet_mcp::tui::LogBuffer::default();
@@ -270,6 +286,7 @@ async fn run_tui(cli: Cli, mut config: GatewayConfig) -> Result<(), Box<dyn std:
         config.clone(),
         cli.config.clone(),
         log_buffer,
+        want_http,
         shutdown.clone(),
     )
     .await;
@@ -370,9 +387,22 @@ fn resolved_http_bind(config: &GatewayConfig, cli: &Cli) -> Option<String> {
         .or_else(|| config.mcp.http.as_ref().map(|h| h.bind.clone()))
 }
 
+fn default_http_bind_string() -> String {
+    bacnet_mcp::config::McpHttpConfig::default().bind
+}
+
+/// Spawn the stdio MCP transport.
+///
+/// `cancel_on_disconnect` controls whether the global shutdown is triggered
+/// when the stdio peer disconnects. For `--transport stdio` (alone) this is
+/// `true` — the daemon was spawned by a parent process and should exit when
+/// stdin closes. For `--transport both` it's `false` — a transient stdio peer
+/// disconnect must not tear down the HTTP transport that other clients use.
+/// Startup errors always cascade.
 fn spawn_stdio_server(
     state: bacnet_mcp::state::GatewayState,
     shutdown: CancellationToken,
+    cancel_on_disconnect: bool,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         tracing::info!("MCP stdio transport: ready");
@@ -384,15 +414,22 @@ fn spawn_stdio_server(
                 tokio::select! {
                     _ = server.waiting() => {
                         tracing::info!("MCP stdio peer disconnected");
+                        if cancel_on_disconnect {
+                            shutdown.cancel();
+                        }
                     }
                     _ = shutdown.cancelled() => {
                         tracing::info!("MCP stdio: shutdown requested");
                     }
                 }
             }
-            Err(e) => tracing::error!("MCP stdio failed to start: {e}"),
+            Err(e) => {
+                tracing::error!("MCP stdio failed to start: {e}");
+                // Startup failure always cascades — the daemon can't run as
+                // configured and should exit so the operator notices.
+                shutdown.cancel();
+            }
         }
-        shutdown.cancel();
     })
 }
 

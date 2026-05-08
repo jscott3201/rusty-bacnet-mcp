@@ -199,9 +199,12 @@ impl GatewayMcp {
                     "Device: {} (instance {})\n",
                     config.device.name, config.device.instance
                 ));
+                // Read mode from the live RuntimeFlags atomic, not the frozen
+                // startup config — TUI hot-reload of mcp.read_only is reflected
+                // here so MCP clients can trust this resource for safety state.
                 result.push_str(&format!(
                     "Mode: {}\n",
-                    if config.mcp.read_only {
+                    if self.state.is_read_only() {
                         "read-only"
                     } else {
                         "writable"

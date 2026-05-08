@@ -85,6 +85,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
             &app.gateway,
             &app.config,
             &app.log_buffer,
+            app.http_listening,
             true,
         ),
         Tab::Operate => operate::render(frame, area, &app.operate, true),
@@ -112,7 +113,13 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         v.push(("F1", "help"));
         v.push(("Ctrl-M", "mouse"));
-        v.push(("q", "quit"));
+        // In Configure tab, `q` is text input for the editor. Surface the
+        // global quit shortcut (Ctrl-C) instead so the hint is honest.
+        v.push(if app.tab == Tab::Configure {
+            ("Ctrl-C", "quit")
+        } else {
+            ("q", "quit")
+        });
         v
     };
 

@@ -35,7 +35,11 @@ impl ConfigureState {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.editor.lines().join("\n") != self.disk_text
+        // tui-textarea drops the trailing newline that POSIX-style files end
+        // with, so a freshly-loaded file would show as modified immediately
+        // unless we normalize. Strip trailing newlines on both sides.
+        let editor_text = self.editor.lines().join("\n");
+        editor_text.trim_end_matches('\n') != self.disk_text.trim_end_matches('\n')
     }
 
     /// Run JSON parse + GatewayConfig validate against the buffer contents.

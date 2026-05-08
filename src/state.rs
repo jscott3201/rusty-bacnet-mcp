@@ -52,6 +52,18 @@ impl RuntimeFlags {
             .store(config.mcp.read_only, Ordering::Relaxed);
     }
 
+    /// Mirror the same set of fields that `apply()` reads from `src` into `dst`.
+    /// The TUI calls this on `PartialApplied` reload outcomes so its in-memory
+    /// view of `GatewayConfig` reflects exactly what's live, while
+    /// restart-required fields keep showing the old (still-effective) values.
+    ///
+    /// **Invariant:** the field set mirrored here MUST match `apply()` exactly.
+    /// Adding a hot-applied field requires updating both — and the classifier
+    /// in `crate::tui::reload_safety_check`.
+    pub fn mirror_applied_fields(src: &GatewayConfig, dst: &mut GatewayConfig) {
+        dst.mcp.read_only = src.mcp.read_only;
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only.load(Ordering::Relaxed)
     }

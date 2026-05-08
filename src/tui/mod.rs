@@ -45,12 +45,16 @@ type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 /// terminal on exit (or panic). `shutdown` propagates Ctrl-C / SIGTERM from
 /// outside; the TUI also cancels it on its own quit. `log_buffer` is the
 /// shared ring buffer that the tracing Layer (installed by `main.rs`) writes
-/// into and the Observe tab reads from.
+/// into and the Observe tab reads from. `http_listening` reflects whether the
+/// streamable-HTTP MCP transport was actually started for this session — the
+/// Observe tab uses this for the UP/DOWN badge instead of inferring from
+/// config presence.
 pub async fn run(
     state: GatewayState,
     config: GatewayConfig,
     config_path: String,
     log_buffer: LogBuffer,
+    http_listening: bool,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read the on-disk config text so the editor starts mirroring the file.
@@ -67,6 +71,7 @@ pub async fn run(
         config_path,
         config_text,
         log_buffer,
+        http_listening,
         shutdown.clone(),
     )
     .await;
@@ -105,6 +110,7 @@ fn install_panic_hook() {
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn main_loop(
     terminal: &mut Tui,
     state: GatewayState,
@@ -112,6 +118,7 @@ async fn main_loop(
     config_path: String,
     config_text: String,
     log_buffer: LogBuffer,
+    http_listening: bool,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
     let mut app = App::new(
@@ -121,6 +128,7 @@ async fn main_loop(
         shutdown.clone(),
         config_text,
         log_buffer,
+        http_listening,
     );
 
     // Event fan-in (crossterm + ticks + render) and a sender we can hand to
@@ -347,8 +355,12 @@ async fn do_save_and_reload(app: &mut App) {
     }
 
     // 3. Write to disk. We persist the new config even when fields are stale
-    //    so the next daemon restart picks them up.
-    let text = app.configure.editor.lines().join("\n");
+    //    so the next daemon restart picks them up. Write with a trailing
+    //    newline (POSIX convention); the dirty-check normalizes both sides.
+    let mut text = app.configure.editor.lines().join("\n");
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
     if let Err(e) = std::fs::write(&app.config_path, &text) {
         let msg = format!("write {}: {}", app.config_path, e);
         app.configure.record_error(msg.clone());
@@ -361,8 +373,25 @@ async fn do_save_and_reload(app: &mut App) {
     //    MCP tool calls see the new value on their next read.
     app.gateway.flags.apply(&parsed);
 
-    // 5. Update the TUI's view so the Observe tab reflects the persisted file.
-    app.config = parsed;
+    // 5. Update the TUI's runtime view so it reflects what's actually live.
+    //
+    //    On `Applied`, every change is hot-safe → mirror the whole parsed
+    //    config so future reload-checks compare against the new baseline.
+    //
+    //    On `PartialApplied`, restart-required fields are NOT live yet — the
+    //    Observe tab and `bacnet://state/config` resource must keep showing
+    //    the old (still-effective) values. We only mirror the fields that
+    //    actually applied; the new file lives on disk and takes effect at
+    //    next daemon start.
+    match &outcome {
+        ReloadOutcome::Applied { .. } => {
+            app.config = parsed;
+        }
+        ReloadOutcome::PartialApplied { .. } => {
+            crate::state::RuntimeFlags::mirror_applied_fields(&parsed, &mut app.config);
+        }
+        ReloadOutcome::Refused { .. } => unreachable!("handled at step 2"),
+    }
     app.configure.mark_saved();
 
     // 6. Toast the operator about what actually applied vs. what's stale.
@@ -731,5 +760,31 @@ mod reload_tests {
         next.mcp.read_only = false;
         flags.apply(&next);
         assert!(!flags.is_read_only());
+    }
+
+    #[test]
+    fn mirror_applied_fields_only_updates_hot_safe_bits() {
+        // The TUI calls mirror_applied_fields on PartialApplied so the runtime
+        // view shows new values for applied fields while keeping old values for
+        // restart-required fields. This test pins that contract: after mirror,
+        // mcp.read_only matches the new config but mcp.api_key (stale) does not.
+        let mut runtime_view = baseline();
+        let mut new_file = baseline();
+        new_file.mcp.read_only = false;
+        new_file.mcp.api_key = Some("rotated-token".into());
+        new_file.mcp.http = Some(crate::config::McpHttpConfig {
+            bind: "0.0.0.0:9999".into(),
+        });
+
+        crate::state::RuntimeFlags::mirror_applied_fields(&new_file, &mut runtime_view);
+
+        // Applied → mirrored.
+        assert!(!runtime_view.mcp.read_only);
+        // Stale → unchanged from baseline.
+        assert_eq!(runtime_view.mcp.api_key.as_deref(), Some("token-A"));
+        assert_eq!(
+            runtime_view.mcp.http.as_ref().map(|h| h.bind.as_str()),
+            Some("127.0.0.1:3000")
+        );
     }
 }

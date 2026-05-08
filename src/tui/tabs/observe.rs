@@ -97,6 +97,7 @@ impl Default for ObserveState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -104,6 +105,7 @@ pub fn render(
     gateway: &GatewayState,
     config: &GatewayConfig,
     log_buffer: &LogBuffer,
+    http_listening: bool,
     focused: bool,
 ) {
     let chunks = Layout::default()
@@ -117,7 +119,7 @@ pub fn render(
         .split(chunks[0]);
 
     render_devices(frame, top[0], state, focused);
-    render_status(frame, top[1], gateway, config);
+    render_status(frame, top[1], gateway, config, http_listening);
     render_logs(frame, chunks[1], state, log_buffer);
 }
 
@@ -209,7 +211,13 @@ fn render_devices(frame: &mut Frame, area: Rect, state: &mut ObserveState, focus
     );
 }
 
-fn render_status(frame: &mut Frame, area: Rect, gateway: &GatewayState, config: &GatewayConfig) {
+fn render_status(
+    frame: &mut Frame,
+    area: Rect,
+    gateway: &GatewayState,
+    config: &GatewayConfig,
+    http_listening: bool,
+) {
     let mut lines: Vec<Line> = Vec::new();
 
     lines.push(Line::from(vec![
@@ -219,9 +227,12 @@ fn render_status(frame: &mut Frame, area: Rect, gateway: &GatewayState, config: 
             config.device.name, config.device.instance
         )),
     ]));
+    // Read-only state comes from the live RuntimeFlags atomic, not the frozen
+    // config — TUI hot-reload of mcp.read_only updates the atomic and this
+    // panel reflects the change on the next render.
     lines.push(Line::from(vec![
         Span::styled("Mode ", theme::HEADER_TITLE),
-        if config.mcp.read_only {
+        if gateway.is_read_only() {
             Span::styled("read-only", theme::WARN)
         } else {
             Span::styled("writable", theme::OK)
@@ -281,23 +292,46 @@ fn render_status(frame: &mut Frame, area: Rect, gateway: &GatewayState, config: 
         Span::styled(" OFF ", theme::DIM),
         Span::styled(" (TUI owns stdout)", theme::DIM),
     ]));
-    if let Some(http) = &config.mcp.http {
-        lines.push(Line::from(vec![
-            Span::raw("  http  "),
-            Span::styled(" UP ", theme::OK),
-            Span::raw(format!(" {}/mcp", http.bind)),
-        ]));
-        let auth_label = if config.mcp.api_key.is_some() {
-            Span::styled("bearer auth required", theme::OK)
-        } else {
-            Span::styled("no auth (open)", theme::WARN)
-        };
-        lines.push(Line::from(vec![Span::raw("        "), auth_label]));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  http  — not configured",
-            theme::DIM,
-        )));
+    // Render based on actual listener state, not config presence: --no-http
+    // disables the listener even when [mcp.http] is set in the file.
+    match (http_listening, &config.mcp.http) {
+        (true, Some(http)) => {
+            lines.push(Line::from(vec![
+                Span::raw("  http  "),
+                Span::styled(" UP ", theme::OK),
+                Span::raw(format!(" {}/mcp", http.bind)),
+            ]));
+            let auth_label = if config.mcp.api_key.is_some() {
+                Span::styled("bearer auth required", theme::OK)
+            } else {
+                Span::styled("no auth (open)", theme::WARN)
+            };
+            lines.push(Line::from(vec![Span::raw("        "), auth_label]));
+        }
+        (true, None) => {
+            // Defensive — main.rs reconciles this, but render gracefully if not.
+            lines.push(Line::from(vec![
+                Span::raw("  http  "),
+                Span::styled(" UP ", theme::OK),
+                Span::styled(" (bind unknown)", theme::WARN),
+            ]));
+        }
+        (false, Some(http)) => {
+            lines.push(Line::from(vec![
+                Span::raw("  http  "),
+                Span::styled(" DOWN ", theme::ERR),
+                Span::styled(
+                    format!(" (--no-http; would bind {})", http.bind),
+                    theme::DIM,
+                ),
+            ]));
+        }
+        (false, None) => {
+            lines.push(Line::from(Span::styled(
+                "  http  — disabled (--no-http)",
+                theme::DIM,
+            )));
+        }
     }
 
     let para = Paragraph::new(lines)

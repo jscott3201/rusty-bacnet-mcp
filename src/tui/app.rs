@@ -47,6 +47,11 @@ pub struct App {
     pub config_path: String,
     pub shutdown: CancellationToken,
     pub log_buffer: LogBuffer,
+    /// True when the HTTP MCP listener was started for this session.
+    /// Renders as the UP/DOWN badge — independent of whether `config.mcp.http`
+    /// is populated, so `--no-http` shows DOWN even with an http block in the
+    /// config file.
+    pub http_listening: bool,
 
     pub tab: Tab,
     pub mouse_capture: bool,
@@ -68,6 +73,7 @@ impl App {
         shutdown: CancellationToken,
         initial_config_text: String,
         log_buffer: LogBuffer,
+        http_listening: bool,
     ) -> Self {
         Self {
             gateway,
@@ -75,6 +81,7 @@ impl App {
             config_path,
             shutdown,
             log_buffer,
+            http_listening,
             tab: Tab::Observe,
             mouse_capture: true,
             help_visible: false,
