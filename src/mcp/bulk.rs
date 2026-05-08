@@ -29,12 +29,33 @@ use crate::state::GatewayState;
 
 // ─── read_property_multiple ─────────────────────────────────────────────────
 
+/// Property identifier as the schema documents it: either a string name
+/// (`"present-value"`) or a numeric raw id (`87`). The `#[serde(untagged)]`
+/// enum lets MCP clients send either JSON shape; both round-trip through
+/// `parse_property_name`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum PropertyId {
+    Name(String),
+    Number(u32),
+}
+
+impl PropertyId {
+    fn resolve(&self) -> Result<bacnet_types::enums::PropertyIdentifier, String> {
+        match self {
+            PropertyId::Name(s) => parse_property_name(s),
+            PropertyId::Number(n) => Ok(bacnet_types::enums::PropertyIdentifier::from_raw(*n)),
+        }
+    }
+}
+
 /// One object + the list of properties to read on it.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PropertyRequest {
-    /// Property name (e.g. "present-value") or numeric id.
-    #[schemars(description = "Property name or numeric id (e.g. 'present-value', 87)")]
-    pub property: String,
+    /// Property name (e.g. "present-value") or numeric raw id (e.g. 87).
+    /// Both JSON shapes are accepted.
+    #[schemars(description = "Property name (string) or numeric raw id (integer)")]
+    pub property: PropertyId,
     /// Optional array index for array properties (e.g. priority-array slot).
     #[schemars(description = "Optional array index (1-based)")]
     pub array_index: Option<u32>,
@@ -97,7 +118,7 @@ fn build_rpm_specs(objects: &[ObjectRequest]) -> Result<Vec<ReadAccessSpecificat
             ObjectIdentifier::new(obj_type, obj.object_instance).map_err(|e| format!("{e}"))?;
         let mut prop_refs = Vec::with_capacity(obj.properties.len());
         for p in &obj.properties {
-            let prop_id = parse_property_name(&p.property)?;
+            let prop_id = p.property.resolve()?;
             prop_refs.push(PropertyReference {
                 property_identifier: prop_id,
                 property_array_index: p.array_index,
@@ -270,45 +291,8 @@ pub async fn enumerate_objects_impl(
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, params.device_instance)
         .map_err(|e| format!("{e}"))?;
 
-    // Step 1: read Device.object_list. If the array is too large for one APDU
-    // and the device segments, the upstream client handles segmentation.
-    let object_list_specs = vec![ReadAccessSpecification {
-        object_identifier: device_oid,
-        list_of_property_references: vec![prop_ref(PropertyIdentifier::OBJECT_LIST)],
-    }];
-    let ack = client
-        .read_property_multiple(&entry.mac_address, object_list_specs)
-        .await
-        .map_err(|e| format!("ReadPropertyMultiple(object_list): {e}"))?;
-
-    let object_list_result = ack
-        .list_of_read_access_results
-        .first()
-        .and_then(|r| r.list_of_results.first())
-        .ok_or("RPM ACK had no object_list result")?;
-
-    if let Some((class, code)) = object_list_result.error {
-        return Err(format!(
-            "Device returned error reading object_list: class={class:?} code={code:?}"
-        ));
-    }
-    let bytes = object_list_result
-        .property_value
-        .as_ref()
-        .ok_or("object_list returned no value")?;
-    let decoded = decode_raw_property_to_json_with_context(bytes, PropertyIdentifier::OBJECT_LIST);
-
-    let arr = decoded
-        .get("value")
-        .and_then(|v| v.as_array())
-        .ok_or("object_list did not decode as an array")?;
-
-    let mut oids: Vec<ObjectIdentifier> = Vec::new();
-    for v in arr.iter().take(limit as usize) {
-        if let Some(oid) = parse_object_id_from_json(v) {
-            oids.push(oid);
-        }
-    }
+    let (oids, total_count) =
+        read_object_list(client, &entry.mac_address, device_oid, limit).await?;
 
     if oids.is_empty() {
         return Ok(format!(
@@ -372,8 +356,8 @@ pub async fn enumerate_objects_impl(
     let mut out = format!(
         "Device {} has {} object(s){}:\n",
         params.device_instance,
-        arr.len(),
-        if arr.len() > limit as usize {
+        total_count,
+        if total_count > oids.len() {
             format!(" (showing first {})", oids.len())
         } else {
             String::new()
@@ -388,6 +372,143 @@ pub async fn enumerate_objects_impl(
         ));
     }
     Ok(out)
+}
+
+/// Read a device's `object_list`, returning up to `limit` entries plus the
+/// total reported size of the list. Tries the simple full-property RPM first
+/// (works on segmenting devices); on any failure (APDU too large, missing
+/// segmentation support, encode error) falls back to indexed reads — `[0]`
+/// returns the array length, then `[1..=count]` are read in chunks.
+async fn read_object_list(
+    client: &bacnet_client::client::BACnetClient<bacnet_transport::bip::BipTransport>,
+    mac: &[u8],
+    device_oid: ObjectIdentifier,
+    limit: u32,
+) -> Result<(Vec<ObjectIdentifier>, usize), String> {
+    // Path A: full property read.
+    let full_specs = vec![ReadAccessSpecification {
+        object_identifier: device_oid,
+        list_of_property_references: vec![prop_ref(PropertyIdentifier::OBJECT_LIST)],
+    }];
+    if let Ok(ack) = client.read_property_multiple(mac, full_specs).await {
+        if let Some(elem) = ack
+            .list_of_read_access_results
+            .first()
+            .and_then(|r| r.list_of_results.first())
+        {
+            if elem.error.is_none() {
+                if let Some(bytes) = &elem.property_value {
+                    let decoded = decode_raw_property_to_json_with_context(
+                        bytes,
+                        PropertyIdentifier::OBJECT_LIST,
+                    );
+                    let oids = oids_from_decoded(&decoded);
+                    let total = oids.len();
+                    let truncated: Vec<_> = oids.into_iter().take(limit as usize).collect();
+                    return Ok((truncated, total));
+                }
+            }
+        }
+        // Fall through to indexed reads on logical errors.
+    }
+
+    // Path B: indexed reads. `[0]` returns the array length per ASHRAE 135.
+    let len_specs = vec![ReadAccessSpecification {
+        object_identifier: device_oid,
+        list_of_property_references: vec![PropertyReference {
+            property_identifier: PropertyIdentifier::OBJECT_LIST,
+            property_array_index: Some(0),
+        }],
+    }];
+    let len_ack = client
+        .read_property_multiple(mac, len_specs)
+        .await
+        .map_err(|e| format!("ReadPropertyMultiple(object_list[0]): {e}"))?;
+    let len_elem = len_ack
+        .list_of_read_access_results
+        .first()
+        .and_then(|r| r.list_of_results.first())
+        .ok_or("indexed object_list[0] returned no result")?;
+    if let Some((class, code)) = len_elem.error {
+        return Err(format!(
+            "Device returned error reading object_list[0]: class={class:?} code={code:?}"
+        ));
+    }
+    let count_bytes = len_elem
+        .property_value
+        .as_ref()
+        .ok_or("indexed object_list[0] returned no value")?;
+    let count_json =
+        decode_raw_property_to_json_with_context(count_bytes, PropertyIdentifier::OBJECT_LIST);
+    let count = count_json
+        .get("value")
+        .and_then(|v| v.as_u64())
+        .ok_or("indexed object_list[0] did not decode as an unsigned integer")?
+        as u32;
+
+    if count == 0 {
+        return Ok((Vec::new(), 0));
+    }
+
+    // Indices 1..=count, in chunks. 32 indices per RPM keeps each request
+    // small enough for un-segmenting devices.
+    const CHUNK: u32 = 32;
+    let to_read = count.min(limit);
+    let mut oids = Vec::with_capacity(to_read as usize);
+    let mut next = 1u32;
+    while next <= to_read {
+        let end = next.saturating_add(CHUNK).min(to_read + 1);
+        let prop_refs: Vec<PropertyReference> = (next..end)
+            .map(|i| PropertyReference {
+                property_identifier: PropertyIdentifier::OBJECT_LIST,
+                property_array_index: Some(i),
+            })
+            .collect();
+        let specs = vec![ReadAccessSpecification {
+            object_identifier: device_oid,
+            list_of_property_references: prop_refs,
+        }];
+        let ack = client
+            .read_property_multiple(mac, specs)
+            .await
+            .map_err(|e| format!("ReadPropertyMultiple(object_list[{next}..{end}]): {e}"))?;
+        if let Some(result) = ack.list_of_read_access_results.first() {
+            for elem in &result.list_of_results {
+                if elem.error.is_some() {
+                    continue;
+                }
+                let Some(bytes) = &elem.property_value else {
+                    continue;
+                };
+                let decoded = decode_raw_property_to_json_with_context(
+                    bytes,
+                    PropertyIdentifier::OBJECT_LIST,
+                );
+                if let Some(oid) = parse_object_id_from_json(&decoded) {
+                    oids.push(oid);
+                }
+            }
+        }
+        next = end;
+    }
+    Ok((oids, count as usize))
+}
+
+/// Extract every `ObjectIdentifier` out of a decoded `object_list` JSON value.
+///
+/// Handles both shapes the decoder emits:
+/// - Single-element arrays decode to a scalar `{type: "object-identifier", value: "..."}`.
+/// - Multi-element arrays decode to `{type: "list", value: [..]}`.
+fn oids_from_decoded(decoded: &serde_json::Value) -> Vec<ObjectIdentifier> {
+    // List shape.
+    if let Some(arr) = decoded.get("value").and_then(|v| v.as_array()) {
+        return arr.iter().filter_map(parse_object_id_from_json).collect();
+    }
+    // Scalar shape — single-element list collapsed by the decoder.
+    if let Some(oid) = parse_object_id_from_json(decoded) {
+        return vec![oid];
+    }
+    Vec::new()
 }
 
 fn parse_object_id_from_json(v: &serde_json::Value) -> Option<ObjectIdentifier> {
@@ -485,7 +606,7 @@ mod tests {
             object_type: "analog-output".into(),
             object_instance: 1,
             properties: vec![PropertyRequest {
-                property: "priority-array".into(),
+                property: PropertyId::Name("priority-array".into()),
                 array_index: Some(8),
             }],
         }];
@@ -504,12 +625,95 @@ mod tests {
             object_type: "nonexistent-type".into(),
             object_instance: 1,
             properties: vec![PropertyRequest {
-                property: "present-value".into(),
+                property: PropertyId::Name("present-value".into()),
                 array_index: None,
             }],
         }];
         let err = build_rpm_specs(&req).unwrap_err();
         assert!(err.contains("nonexistent-type"));
+    }
+
+    #[test]
+    fn property_id_resolves_string_or_number() {
+        // String form — canonical name.
+        assert_eq!(
+            PropertyId::Name("present-value".into()).resolve().unwrap(),
+            PropertyIdentifier::PRESENT_VALUE,
+        );
+        // Number form — raw id, exactly what the docs/schema promise.
+        assert_eq!(
+            PropertyId::Number(87).resolve().unwrap(),
+            PropertyIdentifier::PRIORITY_ARRAY,
+        );
+    }
+
+    #[test]
+    fn property_id_deserializes_from_string_and_number_json() {
+        // Serde must accept both JSON shapes per the untagged enum contract.
+        // This test guards against regressions that retype the field as a
+        // bare String (which was the original Codex callout).
+        let from_string: PropertyId =
+            serde_json::from_str("\"present-value\"").expect("string form");
+        assert!(matches!(from_string, PropertyId::Name(ref s) if s == "present-value"));
+
+        let from_number: PropertyId = serde_json::from_str("87").expect("number form");
+        assert!(matches!(from_number, PropertyId::Number(87)));
+    }
+
+    #[test]
+    fn parse_object_type_accepts_vendor_form() {
+        // Proprietary types round-trip through `vendor-{n}` — the decoder
+        // emits this for unknown raw ids and `parse_object_type` must accept
+        // it so `enumerate_objects` doesn't silently drop entries.
+        let ot = crate::parse::parse_object_type("vendor-513").unwrap();
+        assert_eq!(ot.to_raw(), 513);
+        let ot = crate::parse::parse_object_type("vendor_700").unwrap();
+        assert_eq!(ot.to_raw(), 700);
+    }
+
+    #[test]
+    fn parse_object_id_from_vendor_form() {
+        let v = serde_json::json!({"type": "object-identifier", "value": "vendor-513:42"});
+        let oid = parse_object_id_from_json(&v).unwrap();
+        assert_eq!(oid.object_type().to_raw(), 513);
+        assert_eq!(oid.instance_number(), 42);
+    }
+
+    #[test]
+    fn oids_from_decoded_handles_singleton_scalar() {
+        // Single-element object-list path — decoder emits a scalar instead of
+        // a `{type: "list", value: [..]}` envelope. The previous code path
+        // failed with "did not decode as an array".
+        let decoded = serde_json::json!({
+            "type": "object-identifier",
+            "value": "device:42"
+        });
+        let oids = oids_from_decoded(&decoded);
+        assert_eq!(oids.len(), 1);
+        assert_eq!(oids[0].object_type(), ObjectType::DEVICE);
+        assert_eq!(oids[0].instance_number(), 42);
+    }
+
+    #[test]
+    fn oids_from_decoded_handles_list_envelope() {
+        let decoded = serde_json::json!({
+            "type": "list",
+            "value": [
+                {"type": "object-identifier", "value": "analog-input:1"},
+                {"type": "object-identifier", "value": "analog-input:2"},
+                {"type": "object-identifier", "value": "vendor-600:99"},
+            ]
+        });
+        let oids = oids_from_decoded(&decoded);
+        assert_eq!(oids.len(), 3);
+        assert_eq!(oids[0].instance_number(), 1);
+        assert_eq!(oids[2].object_type().to_raw(), 600);
+    }
+
+    #[test]
+    fn oids_from_decoded_empty_for_unknown_shape() {
+        let decoded = serde_json::json!({"type": "garbage"});
+        assert!(oids_from_decoded(&decoded).is_empty());
     }
 
     #[test]

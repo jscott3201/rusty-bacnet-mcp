@@ -214,7 +214,7 @@ async fn rpm_no_client_after_validation() {
                 object_type: "analog-input".into(),
                 object_instance: 1,
                 properties: vec![bulk::PropertyRequest {
-                    property: "present-value".into(),
+                    property: bulk::PropertyId::Name("present-value".into()),
                     array_index: None,
                 }],
             }],
