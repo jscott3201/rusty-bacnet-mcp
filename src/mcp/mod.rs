@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod objects;
 pub mod properties;
 pub mod reference;
+pub mod schedules;
 pub mod trend;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -185,6 +186,18 @@ impl GatewayMcp {
         params: Parameters<alarms::AcknowledgeAlarmParams>,
     ) -> Result<String, String> {
         alarms::acknowledge_alarm_impl(&self.state, params.0).await
+    }
+
+    // --- Schedule tools ---
+
+    #[tool(
+        description = "Read scalar metadata from a BACnet Schedule object in one RPM round-trip: object-name, present-value, schedule-default, effective-period, list-of-object-property-references (what this schedule writes to), status flags, reliability. Read-only. The weekly-schedule and exception-schedule arrays carry constructed types whose decoders are deferred to a follow-up PR — for those properties the tool reports payload size only."
+    )]
+    async fn read_schedule(
+        &self,
+        params: Parameters<schedules::ReadScheduleParams>,
+    ) -> Result<String, String> {
+        schedules::read_schedule_impl(&self.state, params.0).await
     }
 
     // --- Trend log tools (ReadRange-backed) ---

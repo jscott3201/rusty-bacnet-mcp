@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — Phase 2: schedule reads (scalar metadata)
+
+One new MCP tool for reading BACnet Schedule object metadata. Lets an agent answer "what does this schedule control, what is it outputting right now, and is it healthy?" in one RPM round-trip.
+
+### Added — 1 new MCP tool
+
+- **`read_schedule`** — One-RPM read of Schedule (object type 17) scalar metadata: `object-name`, `description`, `present-value` (current schedule output), `schedule-default` (fallback when nothing is active), `effective-period` (date range), `list-of-object-property-references` (what the schedule writes to — answers "what does this control?"), `status-flags`, `reliability`, `out-of-service`. Read-only.
+
+### Changed
+
+- **Cargo.toml package version 0.7.0 → 0.8.0** plus the matching `Cargo.lock` update.
+
+### Deferred
+
+The two most complex Schedule properties — `weekly-schedule` (7-element array of `BACnetDailySchedule`) and `exception-schedule` (array of `BACnetSpecialEvent`) — carry constructed types whose **decoders are not shipped by `bacnet-services 0.8`**. `read_schedule` reports their raw payload sizes ("64 bytes — decoder deferred") so an agent can tell empty schedules apart from populated ones, but cannot yet enumerate the day-by-day or exception entries.
+
+The matching write tools (`write_schedule_weekly`, `write_schedule_exception`) need the encoder side of the same constructed types and are **also deferred** to a follow-up PR. That PR will likely live alongside Phase 3 work since the Schedule encoders are the largest single decode/encode lift remaining in the project.
+
+### Tests
+
+5 new tests bring the total to 135 passing (86 unit + 49 integration):
+- 3 unit tests in `src/mcp/schedules.rs` pinning the RPM request shape (property count + presence of present-value/schedule-default) and the kebab-case property labelling.
+- 2 integration tests in `tests/schedule_tests.rs` covering the no-client path and pre-dispatch OID validation (instance > 4_194_303 must fail before transport).
+
 ## [0.7.0] — Phase 2: alarms + events + acknowledge_alarm
 
 Three new MCP tools for incident response. Together they answer the agentic question "what events are active on this device, and can I acknowledge a specific transition?" without an upstream COV/notification subscription.
