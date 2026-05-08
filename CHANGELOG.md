@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — Phase 2 begins: bulk-read tools (RPM-backed)
+
+First slice of Phase 2 (MCP feature expansion). Lands ReadPropertyMultiple as foundational infrastructure plus three convenience tools that share it. Together these unlock the **override audit lighthouse demo** ("find all overridden points across N devices, group by source priority").
+
+### Added — 4 new MCP tools (read-only)
+
+- **`read_property_multiple`** — Generic N-objects × M-properties read in one round-trip via the BACnet ReadPropertyMultiple service. Cuts latency 5–10× over sequential `read_property` calls and is the primary tool for bulk reads. Supports per-property `array_index` for array properties; supports `all` / `required` / `optional` aggregate property identifiers.
+- **`read_priority_array`** — Returns the 16-slot priority array, present-value, and relinquish-default for a commandable object in one RPM round-trip. Identifies the highest active priority slot — answers the central agentic question "who is overriding this point?"
+- **`enumerate_objects`** — Lists every object on a remote device with its identifier and `object-name`, by reading `Device.object_list` then chunked object-name reads (32 per RPM). Default cap 500 objects, hard cap 5000. Tolerates per-chunk failures so partial results land even on flaky devices.
+- **`get_device_capabilities`** — One RPM round-trip for the device profile: vendor info, firmware/protocol revisions, max APDU, segmentation support, services-supported bitstring, object-types-supported bitstring. Lets an agent reason about callable services before it tries them.
+
+All four are gated by the existing `read_only` flag the same as other reads (no change to safety surface). The Phase 2 safety control plane (write policy, dry-run, audit log) lands in the next PR alongside priority writes.
+
+### Added — tests
+
+11 new tests: 6 unit tests for the RPM spec builder + JSON object-id parser, 5 integration tests exercising the no-client / parameter-validation paths. Total: 60 tests passing.
+
+### Notes
+- Module structure: new `src/mcp/bulk.rs` (~430 LOC) groups the four tools and their shared helpers (`format_result_element`, `prop_ref`, `parse_object_id_from_json`).
+- No safety-plane changes; all four tools wrap the existing `read_property_multiple` upstream API. The wire-protocol layer is unchanged.
+
 ## [0.3.0] — Operator console (TUI) + reload safety layer
 
 The 0.3.0 release adds an interactive ratatui-based operator console, a layered hot-reload safety story with an explicit type-system split between frozen config and live-mutable runtime flags, and modernized CI patterns adopted from the selene-db reference repo.

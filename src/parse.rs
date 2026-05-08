@@ -22,10 +22,23 @@ pub fn parse_object_specifier(s: &str) -> Result<(ObjectType, u32), String> {
 }
 
 /// Parse an object type name like "analog-input" into ObjectType.
+///
+/// Accepts (in order): bare numeric raw ids ("128"), the `vendor-N` form that
+/// `object_type_name` emits for proprietary types not in `ALL_NAMED`, and
+/// canonical hyphen/underscore-normalized names. Round-trips with
+/// `object_type_name` so JSON values produced by the decoder always re-parse.
 pub fn parse_object_type(s: &str) -> Result<ObjectType, String> {
     let s = s.trim();
     if let Ok(n) = s.parse::<u32>() {
         return Ok(ObjectType::from_raw(n));
+    }
+    if let Some(rest) = s
+        .strip_prefix("vendor-")
+        .or_else(|| s.strip_prefix("vendor_"))
+    {
+        if let Ok(n) = rest.parse::<u32>() {
+            return Ok(ObjectType::from_raw(n));
+        }
     }
     let normalized = s.to_ascii_lowercase().replace('-', "_");
     for &(name, val) in ObjectType::ALL_NAMED {
