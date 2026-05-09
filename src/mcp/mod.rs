@@ -235,6 +235,16 @@ impl GatewayMcp {
         diagnostics::ping_device_impl(&self.state, params.0).await
     }
 
+    #[tool(
+        description = "Probe a BACnet/IP BBMD by reading its Broadcast Distribution Table and Foreign Device Table (Annex J). Returns the BDT (peer BBMDs this BBMD forwards broadcasts to, with broadcast masks) and the FDT (foreign devices registered with this BBMD, with TTL and remaining lifetime). The two reads run concurrently. Read-only. Target is `ip:port` since BBMDs are routing infrastructure addressed by IP, not BACnet device instance. timeout_seconds default uses the transport's internal value, max 30."
+    )]
+    async fn probe_bbmd(
+        &self,
+        params: Parameters<diagnostics::ProbeBbmdParams>,
+    ) -> Result<String, String> {
+        diagnostics::probe_bbmd_impl(&self.state, params.0).await
+    }
+
     // --- Local object tools ---
 
     #[tool(
