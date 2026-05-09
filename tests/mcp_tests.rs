@@ -686,7 +686,7 @@ async fn allow_object_types_overrides_default_allow_list() {
 #[test]
 fn reference_resources_list() {
     let resources = reference::reference_resources();
-    assert_eq!(resources.len(), 9);
+    assert_eq!(resources.len(), 10);
     for r in &resources {
         assert!(
             r.uri.starts_with("bacnet://reference/"),
@@ -760,6 +760,22 @@ fn reference_read_object_type_detail_device() {
     let content = reference::read_reference("bacnet://reference/object-types/device").unwrap();
     assert!(content.contains("vendor-name"));
     assert!(content.contains("object-list"));
+}
+
+#[test]
+fn reference_read_bibbs() {
+    let content = reference::read_reference("bacnet://reference/bibbs").unwrap();
+    // Naming convention is the load-bearing teaching for any BIBB consumer —
+    // an agent that doesn't internalize A=initiator / B=executor will reason
+    // wrong about which side a device fulfills.
+    assert!(content.contains("A-side") || content.contains("A = initiator"));
+    assert!(content.contains("B-side") || content.contains("B = executor"));
+    // Anchor a couple of the load-bearing BIBBs and a profile so a future
+    // refactor can't silently drop them.
+    assert!(content.contains("DS-RP"));
+    assert!(content.contains("DM-DDB"));
+    assert!(content.contains("B-OWS"));
+    assert!(content.contains("protocol-services-supported"));
 }
 
 #[test]

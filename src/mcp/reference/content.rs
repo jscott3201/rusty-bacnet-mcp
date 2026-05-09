@@ -418,3 +418,120 @@ BBMD Issues:
   3. For foreign devices: verify registration is active (use read_fdt tool)
   4. Check if foreign device TTL is expiring before re-registration
 ";
+
+pub const BIBBS: &str = "\
+BACnet Interoperability Building Blocks (BIBBs) — ASHRAE 135-2020 Annex K.
+
+A BIBB is a named bundle of BACnet services that two devices must implement
+to interoperate for a specific function. Standard device profiles are defined
+as sets of BIBBs, so 'this device claims profile X' is shorthand for 'it
+implements every BIBB in X's required set'.
+
+Naming convention:
+  <CATEGORY>-<FUNCTION>-<SIDE>
+
+  Category — what kind of work the BIBB covers:
+    DS    — Data Sharing (read/write properties, COV)
+    AE    — Alarm and Event
+    SCHED — Scheduling
+    T     — Trending
+    DM    — Device Management
+    NM    — Network Management
+
+  Function — the specific operation (e.g. RP = ReadProperty, WP = WriteProperty,
+    RPM = ReadPropertyMultiple, COV = Change-Of-Value, DDB = Dynamic Device
+    Binding, DCC = Device Communication Control).
+
+  Side — A = initiator (client; the device that asks), B = executor (server;
+    the device that responds). Most BIBBs are pair-defined (A and B exist
+    independently). A few are one-sided.
+
+Common BIBBs (the load-bearing subset agents see in real networks):
+
+  Data Sharing:
+    DS-RP-A / DS-RP-B           ReadProperty (single property fetch)
+    DS-RPM-A / DS-RPM-B         ReadPropertyMultiple (batched reads)
+    DS-WP-A / DS-WP-B           WriteProperty (single property write)
+    DS-WPM-A / DS-WPM-B         WritePropertyMultiple (batched writes)
+    DS-COV-A / DS-COV-B         Change-Of-Value subscription (whole object)
+    DS-COVP-A / DS-COVP-B       Change-Of-Value subscription (per property)
+    DS-COVU-A / DS-COVU-B       Unconfirmed COV notifications
+
+  Alarm and Event:
+    AE-N-A / AE-N-I-B / AE-N-E-B   Notifications (initiator / internal / external)
+    AE-ACK-A / AE-ACK-B            Alarm acknowledgement
+    AE-ASUM-A / AE-ASUM-B          GetAlarmSummary
+    AE-ESUM-A / AE-ESUM-B          GetEnrollmentSummary
+    AE-INFO-A / AE-INFO-B          GetEventInformation
+
+  Scheduling:
+    SCHED-A   Read/write a remote Schedule object
+    SCHED-I-B Internal — schedule executes inside the device
+    SCHED-E-B External — schedule writes targets in other devices
+
+  Trending:
+    T-VMT-A / T-VMT-I-B / T-VMT-E-B  Viewing/managing trends
+    T-ATR-A / T-ATR-B                Automatic trend retrieval (ReadRange)
+
+  Device Management:
+    DM-DDB-A / DM-DDB-B   Dynamic Device Binding (Who-Is / I-Am)
+    DM-DOB-A / DM-DOB-B   Dynamic Object Binding (Who-Has / I-Have)
+    DM-DCC-A / DM-DCC-B   Device Communication Control (disable / enable comms)
+    DM-TM-A / DM-TM-B     Text Message
+    DM-TS-A / DM-TS-B     Time Synchronization
+    DM-UTC-A / DM-UTC-B   UTC Time Synchronization
+    DM-RD-A / DM-RD-B     ReinitializeDevice (warm/cold restart)
+    DM-BR-A / DM-BR-B     Backup and Restore (file-based config sync)
+    DM-LM-A / DM-LM-B     List Manipulation (AddListElement / RemoveListElement)
+    DM-OCD-A / DM-OCD-B   Object Creation and Deletion
+    DM-VT-A / DM-VT-B     Virtual Terminal
+
+  Network Management:
+    NM-CE-A / NM-CE-B     Connection Establishment (point-to-point links)
+    NM-RC-A / NM-RC-B     Router Configuration (BBMDs, BDT/FDT, network numbers)
+
+Standard Device Profiles (each profile = 'must implement these BIBBs'):
+
+  B-OWS  Operator Workstation         — broad client surface; reads, writes,
+                                         alarms, schedules, trends across the
+                                         site. Exists on the human-facing end.
+  B-AWS  Advanced Operator Workstation — B-OWS + remote configuration tools
+                                         (NM-RC-A, DM-BR-A, DM-OCD-A).
+  B-BC   Building Controller          — site-level supervisory device:
+                                         executes schedules and event logic
+                                         that touch multiple field controllers.
+  B-AAC  Advanced Application Controller — programmable field controller;
+                                         runs control loops, hosts trend logs
+                                         and event enrollment.
+  B-ASC  Application-Specific Controller — fixed-function field controller
+                                         (VAV box, fan-coil unit). Limited
+                                         object set, no programmable logic.
+  B-SA   Smart Actuator               — narrow-scope output device (damper
+                                         actuator with feedback).
+  B-SS   Smart Sensor                 — narrow-scope input device (pressure
+                                         transducer with COV).
+
+Why this matters for an agent driving the network:
+
+  1. A device's protocol-services-supported (Device property 97) and
+     protocol-object-types-supported (96) are how it advertises which BIBBs
+     it implements. Read those before assuming any service will work.
+
+  2. Profile names appear in marketing copy and PICS documents, not on the
+     wire. The BIBBs are the durable contract — when a device says it 'is a
+     B-BC', the verifiable claim is 'every BIBB in B-BC's required set is
+     implemented'.
+
+  3. Asymmetric pairs matter. If you only see DS-RP-B advertised, the device
+     can answer reads but cannot initiate them — agents that try to chain
+     a ReadProperty call from this device will fail.
+
+  4. SCHED-I-B vs SCHED-E-B is the question 'does this schedule write
+     locally, or out to other devices?'. The Schedule object's
+     list-of-object-property-references answers this directly — see
+     bacnet://reference/object-types/schedule.
+
+  5. Routing and BBMD setup are NM-RC concerns. If you're configuring a
+     BBMD (write_bdt, register_foreign_device), you're operating on the
+     NM-RC-A side and the target device must implement NM-RC-B.
+";
