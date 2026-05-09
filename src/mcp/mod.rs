@@ -4,6 +4,7 @@
 
 pub mod alarms;
 pub mod bulk;
+pub mod diagnostics;
 pub mod discovery;
 pub mod objects;
 pub mod properties;
@@ -220,6 +221,18 @@ impl GatewayMcp {
         params: Parameters<trend::ReadTrendLogParams>,
     ) -> Result<String, String> {
         trend::read_trend_log_impl(&self.state, params.0).await
+    }
+
+    // --- Diagnostic tools ---
+
+    #[tool(
+        description = "Ping a remote BACnet device by issuing one or more confirmed ReadProperty(Device, system-status) round-trips and reporting per-attempt latency plus min/avg/max/loss summary. The BACnet equivalent of ping(8): exercises the full TSM + transport path so a successful response confirms the device is reachable as a BACnet peer, not just IP-reachable. Read-only. count default 1, max 10; timeout_seconds default uses the client's apdu_timeout, max 30; interval_ms default 0, max 5000."
+    )]
+    async fn ping_device(
+        &self,
+        params: Parameters<diagnostics::PingDeviceParams>,
+    ) -> Result<String, String> {
+        diagnostics::ping_device_impl(&self.state, params.0).await
     }
 
     // --- Local object tools ---

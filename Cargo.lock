@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mcp"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "arc-swap",
  "axum",
