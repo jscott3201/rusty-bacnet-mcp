@@ -10,6 +10,7 @@ pub mod objects;
 pub mod properties;
 pub mod reference;
 pub mod schedules;
+pub mod topology;
 pub mod trend;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -419,6 +420,17 @@ impl GatewayMcp {
                     ));
                 }
                 Some(result)
+            }
+            "bacnet://topology/graph" => {
+                let graph = topology::build_graph(&self.state).await;
+                // serde_json::to_string_pretty so a human reading the
+                // resource directly (TUI, curl, debug) sees readable
+                // structure. Agents using a JSON parser don't care about
+                // whitespace; pretty-printing is universally OK here.
+                Some(
+                    serde_json::to_string_pretty(&graph)
+                        .unwrap_or_else(|e| format!("{{\"error\": \"serialize topology: {e}\"}}")),
+                )
             }
             _ => None,
         }

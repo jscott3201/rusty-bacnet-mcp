@@ -87,7 +87,24 @@ pub fn state_resources() -> Vec<Resource> {
             "Recent Write Audit Log",
             "Append-only log of write attempts (allow / deny / dry-run / error). Surfaces the gateway's safety control plane to agents and operators — every write_property, write_local_property, and relinquish_at_priority call lands here.",
         ),
+        json_resource(
+            "bacnet://topology/graph",
+            "Network Topology Graph",
+            "JSON snapshot of the BACnet topology this gateway has observed — local device, networks, devices placed on each network, and gateway routes. Always-stale view built from the device table + config; no fresh wire calls. The `limitations` field reports what isn't included (BBMD peer relationships, inter-network router identification).",
+        ),
     ]
+}
+
+/// Same shape as `resource` but declares `application/json` MIME so MCP
+/// clients route the payload to a JSON parser. The topology graph is
+/// structured data, not prose, so it ships JSON.
+fn json_resource(uri: &str, name: &str, description: &str) -> Resource {
+    Annotated::new(
+        RawResource::new(uri, name)
+            .with_description(description)
+            .with_mime_type("application/json"),
+        None,
+    )
 }
 
 /// Template for per-object-type drill-down.
