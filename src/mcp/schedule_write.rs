@@ -175,6 +175,12 @@ pub async fn write_schedule_weekly_impl(
                 })?,
             );
         }
+        // Duplicate times in a single day's list are invalid on many
+        // devices and would produce a write error after a "successful"
+        // dry-run. Reject up front.
+        if let Some(dup) = find_duplicate_time(&days[i]) {
+            return Err(audit.deny(format!("weekly_schedule.days[{i}]: duplicate time {dup}")));
+        }
     }
 
     let mut payload = BytesMut::new();
@@ -242,12 +248,32 @@ pub async fn write_schedule_exceptions_impl(
     let oid = ObjectIdentifier::new(ObjectType::SCHEDULE, params.schedule_instance)
         .map_err(|e| audit.deny(format!("{e}")))?;
 
-    if let PolicyDecision::Deny(reason) = state.flags.policy().evaluate(oid, None) {
+    let policy = state.flags.policy();
+    // Object-level pre-check (matters for the empty-events case — clearing
+    // the schedule still has to clear allow/deny gates even though there's
+    // no per-event priority to evaluate).
+    if let PolicyDecision::Deny(reason) = policy.evaluate(oid, None) {
         return Err(format!("Policy denied: {}", audit.deny(reason)));
     }
 
     let mut events = Vec::with_capacity(params.events.len());
     for (i, e) in params.events.iter().enumerate() {
+        // Per-event priority must clear the safety-plane priority caps
+        // (`min_priority`/`max_priority`) — exception events embed their
+        // own priority, so the policy must apply per-event, not just
+        // once at object level.
+        if !(1..=16).contains(&e.priority) {
+            return Err(audit.deny(format!(
+                "events[{i}].priority {} out of range; BACnetSpecialEvent.event_priority must be 1..=16",
+                e.priority
+            )));
+        }
+        if let PolicyDecision::Deny(reason) = policy.evaluate(oid, Some(e.priority)) {
+            return Err(format!(
+                "Policy denied: {}",
+                audit.deny(format!("events[{i}] (priority {}): {reason}", e.priority))
+            ));
+        }
         events
             .push(build_special_event(e).map_err(|msg| audit.deny(format!("events[{i}]: {msg}")))?);
     }
@@ -305,7 +331,17 @@ fn build_time_value(input: &TimeValueInput) -> Result<BACnetTimeValue, String> {
         ScheduleValueInput::Real(v) => encode_app_real(&mut buf, *v),
         ScheduleValueInput::Boolean(v) => encode_app_boolean(&mut buf, *v),
         ScheduleValueInput::Unsigned(v) => encode_app_unsigned(&mut buf, *v),
-        ScheduleValueInput::Null(_) => encode_app_null(&mut buf),
+        ScheduleValueInput::Null(v) => {
+            // Tagged `null` requires a literal null payload — silently
+            // accepting `{"null": 5}` would convert a malformed request
+            // into a real BACnet NULL write.
+            if !v.is_null() {
+                return Err(format!(
+                    "'null' tag requires a literal null payload, got {v}"
+                ));
+            }
+            encode_app_null(&mut buf);
+        }
     }
     Ok(BACnetTimeValue {
         time,
@@ -314,6 +350,10 @@ fn build_time_value(input: &TimeValueInput) -> Result<BACnetTimeValue, String> {
 }
 
 fn build_special_event(input: &ExceptionInput) -> Result<BACnetSpecialEvent, String> {
+    // Range check still happens here as defense-in-depth; the wrapper in
+    // `write_schedule_exceptions_impl` also enforces it (with audit) so
+    // policy/priority callouts get a clean deny entry before reaching
+    // this builder.
     if !(1..=16).contains(&input.priority) {
         return Err(format!(
             "priority {} out of range; BACnetSpecialEvent.event_priority must be 1..=16",
@@ -326,11 +366,36 @@ fn build_special_event(input: &ExceptionInput) -> Result<BACnetSpecialEvent, Str
         list_of_time_values
             .push(build_time_value(tv).map_err(|e| format!("time_values[{i}]: {e}"))?);
     }
+    if let Some(dup) = find_duplicate_time(&list_of_time_values) {
+        return Err(format!("duplicate time {dup} in time_values"));
+    }
     Ok(BACnetSpecialEvent {
         period,
         list_of_time_values,
         event_priority: input.priority,
     })
+}
+
+/// Scan a TimeValue list for any duplicated `time` field. Returns a
+/// formatted "HH:MM:SS.HH" so the caller can put the duplicate in the
+/// error message.
+fn find_duplicate_time(tvs: &[BACnetTimeValue]) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    for tv in tvs {
+        let key = (
+            tv.time.hour,
+            tv.time.minute,
+            tv.time.second,
+            tv.time.hundredths,
+        );
+        if !seen.insert(key) {
+            return Some(format!(
+                "{:02}:{:02}:{:02}.{:02}",
+                tv.time.hour, tv.time.minute, tv.time.second, tv.time.hundredths
+            ));
+        }
+    }
+    None
 }
 
 fn build_period(input: &PeriodInput) -> Result<SpecialEventPeriod, String> {
@@ -346,12 +411,33 @@ fn build_period(input: &PeriodInput) -> Result<SpecialEventPeriod, String> {
 
 // ─── parsers ────────────────────────────────────────────────────────────────
 
-/// Parse `HH:MM:SS` or `HH:MM`. Hundredths default to 0. Returns the
-/// input in the error message so a malformed value names itself.
+/// Parse `HH:MM`, `HH:MM:SS`, or `HH:MM:SS.HH` (with hundredths). The
+/// hundredths form round-trips with `format_time`, which renders non-zero
+/// hundredths so read-modify-write loops on existing schedules don't
+/// silently truncate sub-second precision.
 fn parse_time(s: &str) -> Result<Time, String> {
-    let parts: Vec<&str> = s.split(':').collect();
+    let (head, hundredths) = match s.split_once('.') {
+        Some((h, frac)) => {
+            let hh: u8 = frac
+                .parse()
+                .map_err(|_| format!("time '{s}': bad hundredths"))?;
+            if hh > 99 {
+                return Err(format!("time '{s}': hundredths {hh} out of 0..=99"));
+            }
+            (h, hh)
+        }
+        None => (s, 0u8),
+    };
+    let parts: Vec<&str> = head.split(':').collect();
     if !(2..=3).contains(&parts.len()) {
-        return Err(format!("time '{s}' must be 'HH:MM' or 'HH:MM:SS'"));
+        return Err(format!(
+            "time '{s}' must be 'HH:MM', 'HH:MM:SS', or 'HH:MM:SS.HH'"
+        ));
+    }
+    if hundredths != 0 && parts.len() != 3 {
+        return Err(format!(
+            "time '{s}': hundredths require the 'HH:MM:SS.HH' form"
+        ));
     }
     let hour: u8 = parts[0]
         .parse()
@@ -373,7 +459,7 @@ fn parse_time(s: &str) -> Result<Time, String> {
         hour,
         minute,
         second,
-        hundredths: 0,
+        hundredths,
     })
 }
 
@@ -416,12 +502,91 @@ fn parse_concrete_date(s: &str) -> Result<Date, String> {
             "date '{s}': day {day} not in 1..=31 (sentinel patterns deferred to v2)"
         ));
     }
+    // Reject impossible calendar days (Feb 30, Apr 31, etc.). Many devices
+    // reject these on the wire, so dry-runs that succeed here would mislead
+    // callers about real-write outcomes.
+    let dim = days_in_month(year_full, month);
+    if day > dim {
+        return Err(format!(
+            "date '{s}': day {day} invalid for {year_full}-{month:02} (max {dim})"
+        ));
+    }
+    // If a weekday suffix was supplied, verify it matches the actual
+    // calendar weekday. A mismatched suffix produces a Date whose
+    // constraints are internally inconsistent — schedules built around
+    // it may never trigger.
+    if dow != Date::UNSPECIFIED {
+        let actual = iso_weekday(year_full, month, day);
+        if dow != actual {
+            return Err(format!(
+                "date '{s}': day-of-week suffix doesn't match calendar (computed {}, supplied {})",
+                weekday_name(actual),
+                weekday_name(dow),
+            ));
+        }
+    }
     Ok(Date {
         year: (year_full - 1900) as u8,
         month,
         day,
         day_of_week: dow,
     })
+}
+
+fn is_leap_year(year: u16) -> bool {
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+}
+
+fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// ISO weekday: 1=Mon..7=Sun. Matches BACnet `Date.day_of_week`. Computed
+/// via Zeller's congruence (Gregorian).
+fn iso_weekday(year: u16, month: u8, day: u8) -> u8 {
+    let (y, m) = if month < 3 {
+        (year as i32 - 1, month as i32 + 12)
+    } else {
+        (year as i32, month as i32)
+    };
+    let k = y % 100;
+    let j = y / 100;
+    // h: 0=Sat, 1=Sun, 2=Mon..6=Fri
+    let h = (day as i32 + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j).rem_euclid(7);
+    match h {
+        0 => 6, // Sat
+        1 => 7, // Sun
+        2 => 1, // Mon
+        3 => 2, // Tue
+        4 => 3, // Wed
+        5 => 4, // Thu
+        6 => 5, // Fri
+        _ => unreachable!("rem_euclid 7"),
+    }
+}
+
+fn weekday_name(d: u8) -> &'static str {
+    match d {
+        1 => "Mon",
+        2 => "Tue",
+        3 => "Wed",
+        4 => "Thu",
+        5 => "Fri",
+        6 => "Sat",
+        7 => "Sun",
+        _ => "?",
+    }
 }
 
 fn dow_index(name: &str) -> Option<u8> {
@@ -574,5 +739,132 @@ mod tests {
     fn parse_week_n_day_rejects_wrong_part_count() {
         assert!(parse_week_n_day("12/1").is_err());
         assert!(parse_week_n_day("12/1/Mon/extra").is_err());
+    }
+
+    // ─── Codex callout regressions (PR #13) ─────────────────────────────────
+
+    #[test]
+    fn parse_time_accepts_hundredths() {
+        let t = parse_time("08:30:00.50").unwrap();
+        assert_eq!((t.hour, t.minute, t.second, t.hundredths), (8, 30, 0, 50));
+    }
+
+    #[test]
+    fn parse_time_rejects_hundredths_without_seconds() {
+        // Hundredths only make sense alongside seconds; reject 'HH:MM.HH'
+        // so we don't silently lose the precision.
+        assert!(parse_time("08:30.50").is_err());
+    }
+
+    #[test]
+    fn parse_time_rejects_oversize_hundredths() {
+        assert!(parse_time("08:30:00.100").is_err());
+    }
+
+    #[test]
+    fn parse_time_round_trips_hundredths_with_format() {
+        // Mirrors src/mcp/schedules.rs::format_time output for non-zero
+        // hundredths — read-modify-write loops must be lossless.
+        let t = Time {
+            hour: 8,
+            minute: 30,
+            second: 0,
+            hundredths: 50,
+        };
+        let rendered = format!(
+            "{:02}:{:02}:{:02}.{:02}",
+            t.hour, t.minute, t.second, t.hundredths
+        );
+        let parsed = parse_time(&rendered).unwrap();
+        assert_eq!(
+            (parsed.hour, parsed.minute, parsed.second, parsed.hundredths),
+            (t.hour, t.minute, t.second, t.hundredths),
+        );
+    }
+
+    #[test]
+    fn parse_concrete_date_rejects_feb_30() {
+        let err = parse_concrete_date("2026-02-30").unwrap_err();
+        assert!(err.contains("invalid for"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_concrete_date_rejects_apr_31() {
+        let err = parse_concrete_date("2026-04-31").unwrap_err();
+        assert!(err.contains("invalid for"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_concrete_date_accepts_feb_29_in_leap_year() {
+        let d = parse_concrete_date("2024-02-29").unwrap();
+        assert_eq!((d.month, d.day), (2, 29));
+    }
+
+    #[test]
+    fn parse_concrete_date_rejects_feb_29_in_non_leap_year() {
+        let err = parse_concrete_date("2026-02-29").unwrap_err();
+        assert!(err.contains("invalid for"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_concrete_date_rejects_wrong_weekday_suffix() {
+        // 2026-12-25 is a Friday, not a Monday.
+        let err = parse_concrete_date("2026-12-25-Mon").unwrap_err();
+        assert!(err.contains("day-of-week"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_concrete_date_accepts_correct_weekday_suffix() {
+        let d = parse_concrete_date("2026-12-25-Fri").unwrap();
+        assert_eq!(d.day_of_week, 5);
+    }
+
+    #[test]
+    fn iso_weekday_known_dates() {
+        // Spot-check a few well-known calendar dates.
+        // 2026-01-01 was a Thursday.
+        assert_eq!(iso_weekday(2026, 1, 1), 4);
+        // 2024-02-29 was a Thursday (leap-day edge).
+        assert_eq!(iso_weekday(2024, 2, 29), 4);
+        // 2000-01-01 was a Saturday (Y2K leap-century corner).
+        assert_eq!(iso_weekday(2000, 1, 1), 6);
+        // 1999-12-31 was a Friday.
+        assert_eq!(iso_weekday(1999, 12, 31), 5);
+    }
+
+    #[test]
+    fn null_value_requires_literal_null() {
+        let bad = TimeValueInput {
+            time: "08:00".to_string(),
+            value: ScheduleValueInput::Null(serde_json::json!(5)),
+        };
+        let err = build_time_value(&bad).unwrap_err();
+        assert!(err.contains("literal null"), "got: {err}");
+
+        let good = TimeValueInput {
+            time: "08:00".to_string(),
+            value: ScheduleValueInput::Null(serde_json::Value::Null),
+        };
+        assert!(build_time_value(&good).is_ok());
+    }
+
+    #[test]
+    fn duplicate_times_rejected_in_event_list() {
+        let e = ExceptionInput {
+            period: PeriodInput::Date("2026-12-25-Fri".to_string()),
+            time_values: vec![
+                TimeValueInput {
+                    time: "08:00".to_string(),
+                    value: ScheduleValueInput::Real(72.0),
+                },
+                TimeValueInput {
+                    time: "08:00".to_string(),
+                    value: ScheduleValueInput::Real(75.0),
+                },
+            ],
+            priority: 10,
+        };
+        let err = build_special_event(&e).unwrap_err();
+        assert!(err.contains("duplicate time"), "got: {err}");
     }
 }

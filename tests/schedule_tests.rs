@@ -278,7 +278,9 @@ async fn write_schedule_exceptions_dry_run_with_concrete_date() {
             time: "00:00".into(),
             value: ScheduleValueInput::Real(60.0),
         }],
-        priority: 8,
+        // Priority 10 clears the default safety floor (`min_priority = 9`);
+        // exception events are now policy-gated per-event.
+        priority: 10,
     }];
     let result = write_schedule_exceptions_impl(
         &state,
@@ -349,7 +351,9 @@ async fn write_schedule_exceptions_rejects_bad_period_string() {
     let events = vec![ExceptionInput {
         period: PeriodInput::Date("not-a-date".into()),
         time_values: vec![],
-        priority: 8,
+        // Priority must clear the safety floor so the test reaches the
+        // date-parse error path instead of stopping at the policy gate.
+        priority: 10,
     }];
     let result = write_schedule_exceptions_impl(
         &state,
@@ -363,4 +367,34 @@ async fn write_schedule_exceptions_rejects_bad_period_string() {
     .await;
     let err = result.unwrap_err();
     assert!(err.contains("date"));
+}
+
+#[tokio::test]
+async fn write_schedule_exceptions_enforces_priority_floor_per_event() {
+    // Codex P1 (PR #13): exception events embed their own priority and
+    // must clear `min_priority`/`max_priority`. Default safety floor is 9;
+    // priority 5 must be rejected by the policy gate even though the
+    // wider object-level allow check would pass.
+    let state = test_state();
+    let events = vec![ExceptionInput {
+        period: PeriodInput::Date("2026-12-25".into()),
+        time_values: vec![TimeValueInput {
+            time: "00:00".into(),
+            value: ScheduleValueInput::Real(60.0),
+        }],
+        priority: 5,
+    }];
+    let result = write_schedule_exceptions_impl(
+        &state,
+        WriteScheduleExceptionsParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            events,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("Policy denied"), "got: {err}");
+    assert!(err.contains("min_priority"), "got: {err}");
 }
