@@ -699,7 +699,7 @@ fn reference_resources_list() {
 #[test]
 fn state_resources_list() {
     let resources = reference::state_resources();
-    assert_eq!(resources.len(), 4);
+    assert_eq!(resources.len(), 5);
     let prefixes: Vec<&str> = resources
         .iter()
         .map(|r| {
@@ -707,6 +707,8 @@ fn state_resources_list() {
                 "state"
             } else if r.uri.starts_with("bacnet://audit/") {
                 "audit"
+            } else if r.uri.starts_with("bacnet://topology/") {
+                "topology"
             } else {
                 "other"
             }
@@ -714,6 +716,7 @@ fn state_resources_list() {
         .collect();
     assert!(prefixes.iter().filter(|p| **p == "state").count() == 3);
     assert!(prefixes.iter().filter(|p| **p == "audit").count() == 1);
+    assert!(prefixes.iter().filter(|p| **p == "topology").count() == 1);
     assert!(!prefixes.contains(&"other"));
 }
 
