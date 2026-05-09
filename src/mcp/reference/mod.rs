@@ -56,6 +56,11 @@ pub fn reference_resources() -> Vec<Resource> {
             "BACnet Troubleshooting",
             "Common problem patterns, diagnostic steps, and resolution guides",
         ),
+        resource(
+            "bacnet://reference/bibbs",
+            "BACnet Interoperability Building Blocks (BIBBs)",
+            "BIBBs and standard device profiles (B-OWS, B-BC, B-AAC, B-ASC, B-SA, B-SS) — the contract a device implements when it claims a profile",
+        ),
     ]
 }
 
@@ -112,6 +117,7 @@ pub fn read_reference(uri: &str) -> Option<String> {
         "bacnet://reference/networking" => Some(content::NETWORKING.to_string()),
         "bacnet://reference/services" => Some(content::SERVICES.to_string()),
         "bacnet://reference/troubleshooting" => Some(content::TROUBLESHOOTING.to_string()),
+        "bacnet://reference/bibbs" => Some(content::BIBBS.to_string()),
         _ if uri.starts_with("bacnet://reference/object-types/") => {
             let type_name = uri.strip_prefix("bacnet://reference/object-types/")?;
             details::object_type_detail(type_name)
