@@ -327,12 +327,13 @@ impl GatewayConfig {
         }
 
         // BBMD requires BIP transport
-        if let Some(bbmd) = &self.bbmd {
-            if bbmd.enabled && self.transports.bip.is_none() {
-                return Err(ConfigError {
-                    message: "bbmd requires transports.bip to be configured".to_string(),
-                });
-            }
+        if let Some(bbmd) = &self.bbmd
+            && bbmd.enabled
+            && self.transports.bip.is_none()
+        {
+            return Err(ConfigError {
+                message: "bbmd requires transports.bip to be configured".to_string(),
+            });
         }
 
         // SC role: Hub vs Node — `listen` and `hub_uri` are mutually exclusive,
@@ -397,32 +398,28 @@ impl GatewayConfig {
         // PR #3 review flagged that out-of-range values were silently
         // accepted before this check landed.
         if let Some(safety) = &self.mcp.safety {
-            if let Some(min) = safety.min_priority {
-                if !(1..=16).contains(&min) {
-                    return Err(ConfigError {
-                        message: format!(
-                            "mcp.safety.min_priority {min} is out of BACnet range 1..=16"
-                        ),
-                    });
-                }
+            if let Some(min) = safety.min_priority
+                && !(1..=16).contains(&min)
+            {
+                return Err(ConfigError {
+                    message: format!("mcp.safety.min_priority {min} is out of BACnet range 1..=16"),
+                });
             }
-            if let Some(max) = safety.max_priority {
-                if !(1..=16).contains(&max) {
-                    return Err(ConfigError {
-                        message: format!(
-                            "mcp.safety.max_priority {max} is out of BACnet range 1..=16"
-                        ),
-                    });
-                }
+            if let Some(max) = safety.max_priority
+                && !(1..=16).contains(&max)
+            {
+                return Err(ConfigError {
+                    message: format!("mcp.safety.max_priority {max} is out of BACnet range 1..=16"),
+                });
             }
-            if let (Some(min), Some(max)) = (safety.min_priority, safety.max_priority) {
-                if min > max {
-                    return Err(ConfigError {
-                        message: format!(
-                            "mcp.safety.min_priority ({min}) must be ≤ max_priority ({max})"
-                        ),
-                    });
-                }
+            if let (Some(min), Some(max)) = (safety.min_priority, safety.max_priority)
+                && min > max
+            {
+                return Err(ConfigError {
+                    message: format!(
+                        "mcp.safety.min_priority ({min}) must be ≤ max_priority ({max})"
+                    ),
+                });
             }
             // Build the policy once at validate-time so type/object name
             // parse errors fail loudly here rather than at hot-reload.

@@ -107,22 +107,22 @@ impl GatewayBuilder {
             );
         }
 
-        if let Some(bbmd_cfg) = &self.config.bbmd {
-            if bbmd_cfg.enabled {
-                let mut bdt_entries = Vec::new();
-                for entry_str in &bbmd_cfg.bdt {
-                    let addr: std::net::SocketAddrV4 = entry_str.parse().map_err(|e| {
-                        Error::Encoding(format!("invalid BDT entry '{entry_str}': {e}"))
-                    })?;
-                    bdt_entries.push(bacnet_transport::bbmd::BdtEntry {
-                        ip: addr.ip().octets(),
-                        port: addr.port(),
-                        broadcast_mask: [0xff, 0xff, 0xff, 0xff],
-                    });
-                }
-                server_transport.enable_bbmd(bdt_entries);
-                tracing::info!("BBMD enabled with {} BDT entries", bbmd_cfg.bdt.len());
+        if let Some(bbmd_cfg) = &self.config.bbmd
+            && bbmd_cfg.enabled
+        {
+            let mut bdt_entries = Vec::new();
+            for entry_str in &bbmd_cfg.bdt {
+                let addr: std::net::SocketAddrV4 = entry_str.parse().map_err(|e| {
+                    Error::Encoding(format!("invalid BDT entry '{entry_str}': {e}"))
+                })?;
+                bdt_entries.push(bacnet_transport::bbmd::BdtEntry {
+                    ip: addr.ip().octets(),
+                    port: addr.port(),
+                    broadcast_mask: [0xff, 0xff, 0xff, 0xff],
+                });
             }
+            server_transport.enable_bbmd(bdt_entries);
+            tracing::info!("BBMD enabled with {} BDT entries", bbmd_cfg.bdt.len());
         }
 
         // Start server with the pre-configured transport.

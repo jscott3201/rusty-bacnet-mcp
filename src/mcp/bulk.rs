@@ -390,27 +390,23 @@ async fn read_object_list(
         object_identifier: device_oid,
         list_of_property_references: vec![prop_ref(PropertyIdentifier::OBJECT_LIST)],
     }];
-    if let Ok(ack) = client.read_property_multiple(mac, full_specs).await {
-        if let Some(elem) = ack
+    if let Ok(ack) = client.read_property_multiple(mac, full_specs).await
+        && let Some(elem) = ack
             .list_of_read_access_results
             .first()
             .and_then(|r| r.list_of_results.first())
-        {
-            if elem.error.is_none() {
-                if let Some(bytes) = &elem.property_value {
-                    let decoded = decode_raw_property_to_json_with_context(
-                        bytes,
-                        PropertyIdentifier::OBJECT_LIST,
-                    );
-                    let oids = oids_from_decoded(&decoded);
-                    let total = oids.len();
-                    let truncated: Vec<_> = oids.into_iter().take(limit as usize).collect();
-                    return Ok((truncated, total));
-                }
-            }
-        }
-        // Fall through to indexed reads on logical errors.
+        && elem.error.is_none()
+        && let Some(bytes) = &elem.property_value
+    {
+        let decoded =
+            decode_raw_property_to_json_with_context(bytes, PropertyIdentifier::OBJECT_LIST);
+        let oids = oids_from_decoded(&decoded);
+        let total = oids.len();
+        let truncated: Vec<_> = oids.into_iter().take(limit as usize).collect();
+        return Ok((truncated, total));
     }
+    // Path A failures (transport error, property error code, missing value)
+    // fall through to indexed reads.
 
     // Path B: indexed reads. `[0]` returns the array length per ASHRAE 135.
     let len_specs = vec![ReadAccessSpecification {

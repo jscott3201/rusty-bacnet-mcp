@@ -127,7 +127,7 @@ Imports from the `bacnet-*` library crates on crates.io, pinned to `^0.8`:
 
 ## CI
 
-Three-OS test matrix (Linux full feature set; macOS + Windows core). cargo-deny against advisory + license. Zero clippy warnings via `RUSTFLAGS="-Dwarnings"`. MSRV: 1.85 (edition 2024).
+Three-OS test matrix (Linux full feature set; macOS + Windows core). cargo-deny against advisory + license. Zero clippy warnings via `RUSTFLAGS="-Dwarnings"`. MSRV: 1.93 (edition 2024) — bumped from 1.85 alongside the bacnet-* 0.9 upgrade, which requires 1.93.
 
 ## License
 

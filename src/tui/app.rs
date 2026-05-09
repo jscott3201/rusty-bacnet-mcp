@@ -291,10 +291,10 @@ impl App {
 
     /// Drop expired toasts (older than 4 seconds).
     pub fn cull_toast(&mut self) {
-        if let Some((at, _, _)) = self.toast {
-            if at.elapsed() > Duration::from_secs(4) {
-                self.toast = None;
-            }
+        if let Some((at, _, _)) = self.toast
+            && at.elapsed() > Duration::from_secs(4)
+        {
+            self.toast = None;
         }
     }
 }

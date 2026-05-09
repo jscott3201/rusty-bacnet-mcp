@@ -220,9 +220,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-client"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8355521b8d231c48e1d42accf2540d66e11abd0fce110b3a9c01444785765bd4"
+checksum = "c2a6c61c544ffa6e327f4319511ecf61608bc9033cd91fdaf2cc67f192ee26c4"
 dependencies = [
  "bacnet-encoding",
  "bacnet-network",
@@ -237,9 +237,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-encoding"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd15c8c1c97b0eb6d9996b61d8bfe36b4f7692e307d0c6c24fe30c975f1aae07"
+checksum = "c60f48cbf28c5d8cb9e6669effb8f618eae84d4a71f5394186702a23daaf3f08"
 dependencies = [
  "bacnet-types",
  "bytes",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "arc-swap",
  "axum",
@@ -284,9 +284,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-network"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c291df846b75cfa96a08411b0019a09caea63fac55e4f648638015b1e4658bed"
+checksum = "3580673570e3fb0038087644ddcd93fdc54e5c91311751b1d2d3e87c30d01813"
 dependencies = [
  "bacnet-encoding",
  "bacnet-transport",
@@ -298,9 +298,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-objects"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3efb0ba35795854e50345efe35effc54fce0c32627c46e6e5226e4e8eb983f1f"
+checksum = "fd5c8074f4cdb1ed53330559c5571ea34d80e2e22d7595183dcf0a1c42df8678"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -310,9 +310,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-server"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d92048524a158078c211eb9e6c66acecc0e60725e3ed8be2ae07ee59ef1cccef"
+checksum = "999ac74db2efd8ba442583da72bd8ec319c26440bb03b62292b03a0feeeea26f"
 dependencies = [
  "bacnet-encoding",
  "bacnet-network",
@@ -327,9 +327,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-services"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99c0030ad2388ce062f29c9d377cd42d7024847837d0042d31d623c3a1004236"
+checksum = "8f022ddc9f0081022abfe74242fb10c2209680fff64304471b378b45afbe3f8a"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -339,9 +339,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-transport"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afeddc20a945fdc23c822650e113868f0649fdf4f7df3176b5da947d007f870f"
+checksum = "325797ceeb3298e59a1ed3276198d583d0394e1e97c67be6d017b7c9d212c23f"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -358,9 +358,9 @@ dependencies = [
 
 [[package]]
 name = "bacnet-types"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15108c938d7790a7c17af567fb1d3b82095f9f038aec8642ee22a8e17541b9e3"
+checksum = "6975f24ce6506f2906d08bec590272f0001de67cf1090f1f149bb3ce58c494c3"
 dependencies = [
  "bitflags",
  "smallvec",

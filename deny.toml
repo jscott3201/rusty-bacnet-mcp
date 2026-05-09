@@ -4,7 +4,13 @@ all-features = true
 no-default-features = false
 
 [advisories]
-ignore = []
+ignore = [
+    # `paste` is unmaintained (no known CVE). Pulled in transitively by
+    # ratatui 0.29's macro infrastructure. We're pinned to ratatui 0.29 because
+    # tui-textarea / tui-widgets still lag the 0.30 release line; revisit when
+    # the ratatui 0.30 ecosystem catches up. See CLAUDE.md "tui feature".
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2
