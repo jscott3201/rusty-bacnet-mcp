@@ -3,7 +3,10 @@
 #![cfg(feature = "mcp")]
 
 use bacnet_mcp::config::{DeviceConfig, GatewayConfig, McpConfig, TransportsConfig};
-use bacnet_mcp::mcp::schedules::{ReadScheduleParams, read_schedule_impl};
+use bacnet_mcp::mcp::schedules::{
+    ReadScheduleExceptionsParams, ReadScheduleParams, ReadScheduleWeeklyParams,
+    read_schedule_exceptions_impl, read_schedule_impl, read_schedule_weekly_impl,
+};
 use bacnet_mcp::state::GatewayState;
 
 use bacnet_objects::database::ObjectDatabase;
@@ -62,6 +65,74 @@ async fn read_schedule_validates_oid_pre_dispatch() {
     let result = read_schedule_impl(
         &state,
         ReadScheduleParams {
+            device_instance: 1234,
+            schedule_instance: 9_999_999,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(
+        !err.contains("not started"),
+        "OID validation must precede transport, got: {err}"
+    );
+}
+
+// ─── read_schedule_weekly ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn read_schedule_weekly_no_client_errors_cleanly() {
+    let state = test_state();
+    let result = read_schedule_weekly_impl(
+        &state,
+        ReadScheduleWeeklyParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+        },
+    )
+    .await;
+    assert!(result.unwrap_err().contains("not started"));
+}
+
+#[tokio::test]
+async fn read_schedule_weekly_validates_oid_pre_dispatch() {
+    let state = test_state();
+    let result = read_schedule_weekly_impl(
+        &state,
+        ReadScheduleWeeklyParams {
+            device_instance: 1234,
+            schedule_instance: 9_999_999,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(
+        !err.contains("not started"),
+        "OID validation must precede transport, got: {err}"
+    );
+}
+
+// ─── read_schedule_exceptions ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn read_schedule_exceptions_no_client_errors_cleanly() {
+    let state = test_state();
+    let result = read_schedule_exceptions_impl(
+        &state,
+        ReadScheduleExceptionsParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+        },
+    )
+    .await;
+    assert!(result.unwrap_err().contains("not started"));
+}
+
+#[tokio::test]
+async fn read_schedule_exceptions_validates_oid_pre_dispatch() {
+    let state = test_state();
+    let result = read_schedule_exceptions_impl(
+        &state,
+        ReadScheduleExceptionsParams {
             device_instance: 1234,
             schedule_instance: 9_999_999,
         },

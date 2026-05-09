@@ -192,13 +192,33 @@ impl GatewayMcp {
     // --- Schedule tools ---
 
     #[tool(
-        description = "Read scalar metadata from a BACnet Schedule object in one RPM round-trip: object-name, present-value, schedule-default, effective-period, list-of-object-property-references (what this schedule writes to), status flags, reliability. Read-only. The weekly-schedule and exception-schedule arrays carry constructed types whose decoders are deferred to a follow-up PR — for those properties the tool reports payload size only."
+        description = "Read scalar metadata from a BACnet Schedule object in one RPM round-trip: object-name, present-value, schedule-default, effective-period, list-of-object-property-references (what this schedule writes to), status flags, reliability. Read-only. Use read_schedule_weekly and read_schedule_exceptions for the weekly-schedule and exception-schedule arrays — those are kept off this RPM so a populated array can't blow Max-APDU on small devices and take down the scalar fetch."
     )]
     async fn read_schedule(
         &self,
         params: Parameters<schedules::ReadScheduleParams>,
     ) -> Result<String, String> {
         schedules::read_schedule_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Read the weekly-schedule property of a BACnet Schedule object — a 7-element array (Mon..Sun) of (time, value) pairs that fire each day. Single ReadProperty so a populated array can't take down a bundled scalar fetch. Values are decoded via bacnet-services 0.9 codecs; the polymorphic value field of each time-value pair is rendered through the same decoder used for scalar property values."
+    )]
+    async fn read_schedule_weekly(
+        &self,
+        params: Parameters<schedules::ReadScheduleWeeklyParams>,
+    ) -> Result<String, String> {
+        schedules::read_schedule_weekly_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Read the exception-schedule property of a BACnet Schedule object — a list of special events, each defining a period (specific date, date range, week-and-day pattern, or calendar-object reference), its own (time, value) entries, and a priority for conflict resolution against the weekly schedule. Single ReadProperty. Decoded via bacnet-services 0.9 codecs."
+    )]
+    async fn read_schedule_exceptions(
+        &self,
+        params: Parameters<schedules::ReadScheduleExceptionsParams>,
+    ) -> Result<String, String> {
+        schedules::read_schedule_exceptions_impl(&self.state, params.0).await
     }
 
     // --- Trend log tools (ReadRange-backed) ---
