@@ -7,7 +7,9 @@
 #![cfg(feature = "mcp")]
 
 use bacnet_mcp::config::{DeviceConfig, GatewayConfig, McpConfig, TransportsConfig};
-use bacnet_mcp::mcp::diagnostics::{PingDeviceParams, ping_device_impl};
+use bacnet_mcp::mcp::diagnostics::{
+    PingDeviceParams, ProbeBbmdParams, ping_device_impl, probe_bbmd_impl,
+};
 use bacnet_mcp::state::GatewayState;
 
 use bacnet_objects::database::ObjectDatabase;
@@ -155,4 +157,73 @@ async fn ping_device_rejects_interval_above_max_pre_dispatch() {
     let err = result.unwrap_err();
     assert!(!err.contains("not started"));
     assert!(err.contains("interval_ms"));
+}
+
+// ─── probe_bbmd ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn probe_bbmd_no_client_errors_cleanly() {
+    let state = test_state();
+    let result = probe_bbmd_impl(
+        &state,
+        ProbeBbmdParams {
+            target: "192.168.1.10:47808".into(),
+            timeout_seconds: None,
+        },
+    )
+    .await;
+    assert!(result.unwrap_err().contains("not started"));
+}
+
+#[tokio::test]
+async fn probe_bbmd_rejects_bad_target_pre_dispatch() {
+    // Target string is parsed before we touch the client. Agents passing
+    // a malformed address get a clear parse error, not "client not started".
+    let state = test_state();
+    let result = probe_bbmd_impl(
+        &state,
+        ProbeBbmdParams {
+            target: "not-an-address".into(),
+            timeout_seconds: None,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(
+        !err.contains("not started"),
+        "validation must precede transport, got: {err}"
+    );
+    assert!(err.contains("invalid target"));
+}
+
+#[tokio::test]
+async fn probe_bbmd_rejects_zero_timeout_pre_dispatch() {
+    let state = test_state();
+    let result = probe_bbmd_impl(
+        &state,
+        ProbeBbmdParams {
+            target: "192.168.1.10:47808".into(),
+            timeout_seconds: Some(0),
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(!err.contains("not started"));
+    assert!(err.contains("timeout_seconds"));
+}
+
+#[tokio::test]
+async fn probe_bbmd_rejects_timeout_above_max_pre_dispatch() {
+    let state = test_state();
+    let result = probe_bbmd_impl(
+        &state,
+        ProbeBbmdParams {
+            target: "192.168.1.10:47808".into(),
+            timeout_seconds: Some(31),
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(!err.contains("not started"));
+    assert!(err.contains("timeout_seconds"));
 }

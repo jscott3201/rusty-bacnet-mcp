@@ -1,4 +1,4 @@
-//! Diagnostic MCP tools — `ping_device` (and, in a follow-up, `probe_bbmd`).
+//! Diagnostic MCP tools — `ping_device`, `probe_bbmd`.
 //!
 //! `ping_device` is the BACnet equivalent of `ping(8)`: a confirmed
 //! ReadProperty round-trip to a small, universally-required Device property
@@ -7,7 +7,12 @@
 //! a successful ping confirms the device is reachable *as a BACnet peer*,
 //! not just IP-reachable.
 //!
-//! Read-only. Bypasses the write-policy / audit log.
+//! `probe_bbmd` reads the Broadcast Distribution Table and Foreign Device
+//! Table from a BACnet/IP BBMD (Annex J), giving operators and agents a
+//! complete view of the BBMD's topology role: which peer BBMDs it forwards
+//! broadcasts to, and which foreign devices have registered with it.
+//!
+//! Both tools are read-only; they bypass the write-policy / audit log.
 
 use std::time::Duration;
 
@@ -213,4 +218,148 @@ fn format_summary(attempts: &[AttemptResult]) -> String {
     format!(
         "  --- {total} sent, {ok_count} received, {loss_pct:.0}% loss --- min={min:.2}ms avg={avg:.2}ms max={max:.2}ms\n"
     )
+}
+
+// ─── probe_bbmd ─────────────────────────────────────────────────────────────
+
+/// Per-table read timeout. Read-BDT and Read-FDT are unconfirmed BVLL
+/// requests with their own correlation channel — the upstream transport
+/// uses a 2-second internal timeout, but exposing an override gives agents
+/// control on slow networks. 30 s matches the ping_device cap.
+const PROBE_MAX_TIMEOUT_SECS: u64 = 30;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProbeBbmdParams {
+    /// BBMD address as `ip:port` (e.g. `"192.168.1.10:47808"`). BBMDs are
+    /// addressed by IP rather than BACnet device instance because they're
+    /// routing infrastructure and may not appear in the discovered-devices
+    /// table.
+    #[schemars(description = "BBMD address as ip:port (e.g. '192.168.1.10:47808')")]
+    pub target: String,
+    /// Per-table read timeout. Default uses the transport's internal value;
+    /// override raises or lowers it for this call only.
+    #[schemars(description = "Per-table read timeout in seconds (1..=30, default uses transport)")]
+    pub timeout_seconds: Option<u64>,
+}
+
+pub async fn probe_bbmd_impl(
+    state: &GatewayState,
+    params: ProbeBbmdParams,
+) -> Result<String, String> {
+    // Pre-dispatch: validate the target string and timeout range before
+    // touching the client. Same Phase 2 ordering pattern as ping_device.
+    let addr: std::net::SocketAddrV4 = params
+        .target
+        .parse()
+        .map_err(|e| format!("invalid target address '{}': {e}", params.target))?;
+    if let Some(t) = params.timeout_seconds
+        && (t == 0 || t > PROBE_MAX_TIMEOUT_SECS)
+    {
+        return Err(format!(
+            "timeout_seconds {t} out of range; must be 1..={PROBE_MAX_TIMEOUT_SECS}"
+        ));
+    }
+
+    let client = state.require_client()?;
+    let mac = crate::parse::socket_addr_to_mac(addr);
+    let per_read_timeout = params.timeout_seconds.map(Duration::from_secs);
+
+    // Issue the two reads concurrently — they're independent BVLL
+    // request/response pairs against the same BBMD, so back-to-back serial
+    // reads would double the round-trip time for no benefit.
+    let started = Instant::now();
+    let (bdt_result, fdt_result) = tokio::join!(
+        run_with_optional_timeout(per_read_timeout, client.read_bdt(&mac)),
+        run_with_optional_timeout(per_read_timeout, client.read_fdt(&mac)),
+    );
+    let elapsed = started.elapsed();
+
+    Ok(format_bbmd_report(
+        &params.target,
+        elapsed,
+        bdt_result,
+        fdt_result,
+    ))
+}
+
+/// Wrap a future with a tokio timeout when the caller specified one;
+/// pass through unwrapped otherwise.
+async fn run_with_optional_timeout<F, T, E>(timeout: Option<Duration>, fut: F) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    match timeout {
+        Some(t) => match tokio::time::timeout(t, fut).await {
+            Ok(r) => r.map_err(|e| format!("{e}")),
+            Err(_) => Err(format!("timed out after {}s", t.as_secs())),
+        },
+        None => fut.await.map_err(|e| format!("{e}")),
+    }
+}
+
+fn format_bbmd_report(
+    target: &str,
+    elapsed: Duration,
+    bdt_result: Result<Vec<bacnet_transport::bbmd::BdtEntry>, String>,
+    fdt_result: Result<Vec<bacnet_transport::bbmd::FdtEntryWire>, String>,
+) -> String {
+    let mut out = format!("probe_bbmd {} (rtt={:.2}ms):\n", target, ms_from(elapsed),);
+    out.push_str(&format_bdt_section(&bdt_result));
+    out.push_str(&format_fdt_section(&fdt_result));
+    out
+}
+
+fn format_bdt_section(result: &Result<Vec<bacnet_transport::bbmd::BdtEntry>, String>) -> String {
+    match result {
+        Ok(entries) if entries.is_empty() => {
+            "  BDT: <empty> — BBMD does not forward broadcasts to any peers\n".into()
+        }
+        Ok(entries) => {
+            let mut s = format!(
+                "  BDT ({} entr{}):\n",
+                entries.len(),
+                if entries.len() == 1 { "y" } else { "ies" }
+            );
+            for e in entries {
+                let mask = e
+                    .broadcast_mask
+                    .iter()
+                    .map(|b| b.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                s.push_str(&format!(
+                    "    {}.{}.{}.{}:{} mask={mask}\n",
+                    e.ip[0], e.ip[1], e.ip[2], e.ip[3], e.port,
+                ));
+            }
+            s
+        }
+        Err(msg) => format!("  BDT: <error> {msg}\n"),
+    }
+}
+
+fn format_fdt_section(
+    result: &Result<Vec<bacnet_transport::bbmd::FdtEntryWire>, String>,
+) -> String {
+    match result {
+        Ok(entries) if entries.is_empty() => {
+            "  FDT: <empty> — no foreign devices registered\n".into()
+        }
+        Ok(entries) => {
+            let mut s = format!(
+                "  FDT ({} entr{}):\n",
+                entries.len(),
+                if entries.len() == 1 { "y" } else { "ies" }
+            );
+            for e in entries {
+                s.push_str(&format!(
+                    "    {}.{}.{}.{}:{} ttl={}s remaining={}s\n",
+                    e.ip[0], e.ip[1], e.ip[2], e.ip[3], e.port, e.ttl, e.seconds_remaining,
+                ));
+            }
+            s
+        }
+        Err(msg) => format!("  FDT: <error> {msg}\n"),
+    }
 }
