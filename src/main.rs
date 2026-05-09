@@ -369,10 +369,10 @@ fn apply_cli_overrides(config: &mut GatewayConfig, cli: &Cli) {
     if let Some(key) = &cli.api_key {
         config.mcp.api_key = Some(key.clone());
     }
-    if config.mcp.api_key.is_none() {
-        if let Ok(key) = std::env::var("BACNET_MCP_API_KEY") {
-            config.mcp.api_key = Some(key);
-        }
+    if config.mcp.api_key.is_none()
+        && let Ok(key) = std::env::var("BACNET_MCP_API_KEY")
+    {
+        config.mcp.api_key = Some(key);
     }
     if cli.read_only {
         config.mcp.read_only = true;

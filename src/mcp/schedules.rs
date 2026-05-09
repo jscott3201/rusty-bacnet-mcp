@@ -12,16 +12,17 @@
 //!   Decoded into a list of `<device:N>/type:instance/property[idx]` lines.
 //! - `status-flags`, `reliability`, `out-of-service` — health
 //!
-//! **Excluded from this read** (deferred to a follow-up PR alongside their
-//! decoders): `weekly-schedule` and `exception-schedule`. Codex flagged
-//! that bundling them into the metadata RPM was unsafe — large populated
-//! arrays can blow Max-APDU on devices without segmentation, failing the
-//! whole RPM and surfacing none of the scalar fields. They also carry
-//! BACnetDailySchedule and BACnetSpecialEvent constructed types that
-//! `bacnet-services 0.8` ships no decoders for.
+//! **Excluded from this read** (deferred to a follow-up PR): `weekly-schedule`
+//! and `exception-schedule`. Codex flagged that bundling them into the metadata
+//! RPM was unsafe — large populated arrays can blow Max-APDU on devices without
+//! segmentation, failing the whole RPM and surfacing none of the scalar fields.
 //!
-//! Write tools (write_schedule_weekly, write_schedule_exception) are also
-//! deferred — they need the matching encoders for those types.
+//! `bacnet-services 0.9` now ships codecs for both arrays
+//! (`decode_weekly_schedule`, `decode_exception_schedule`,
+//! `encode_weekly_schedule`, `encode_exception_schedule`), so the follow-up
+//! work can build dedicated `read_schedule_weekly` / `read_schedule_exceptions`
+//! tools — issuing single-property ReadProperty calls (not RPM) so a populated
+//! array can't take down the scalar fetch — plus matching write tools.
 
 use schemars::JsonSchema;
 use serde::Deserialize;

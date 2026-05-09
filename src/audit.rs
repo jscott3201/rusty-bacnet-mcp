@@ -126,10 +126,10 @@ impl AuditLog {
         // operators may want disk-only auditing (capacity=0) without losing
         // any records. JSON-Lines format means downstream tooling reads the
         // file directly.
-        if let Some(path) = inner.file_path.clone() {
-            if let Err(e) = append_jsonl(&path, &entry) {
-                tracing::warn!("audit file append failed ({}): {}", path.display(), e);
-            }
+        if let Some(path) = inner.file_path.clone()
+            && let Err(e) = append_jsonl(&path, &entry)
+        {
+            tracing::warn!("audit file append failed ({}): {}", path.display(), e);
         }
         // Codex P2 (PR #3 review): a misconfigured `mcp.audit.capacity = 0`
         // previously hit the `len == capacity` check only when full and then
@@ -168,10 +168,10 @@ impl AuditLog {
 
 fn append_jsonl(path: &Path, entry: &AuditEntry) -> std::io::Result<()> {
     use std::io::Write;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let mut f = std::fs::OpenOptions::new()
         .create(true)

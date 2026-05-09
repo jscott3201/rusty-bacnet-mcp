@@ -35,10 +35,9 @@ pub fn parse_object_type(s: &str) -> Result<ObjectType, String> {
     if let Some(rest) = s
         .strip_prefix("vendor-")
         .or_else(|| s.strip_prefix("vendor_"))
+        && let Ok(n) = rest.parse::<u32>()
     {
-        if let Ok(n) = rest.parse::<u32>() {
-            return Ok(ObjectType::from_raw(n));
-        }
+        return Ok(ObjectType::from_raw(n));
     }
     let normalized = s.to_ascii_lowercase().replace('-', "_");
     for &(name, val) in ObjectType::ALL_NAMED {

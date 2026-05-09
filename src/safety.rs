@@ -112,22 +112,22 @@ impl WritePolicy {
         // tests, custom embeddings) get the same guarantee.
         let min_priority = cfg.min_priority.or(defaults.min_priority);
         let max_priority = cfg.max_priority.or(defaults.max_priority);
-        if let Some(p) = min_priority {
-            if !(1..=16).contains(&p) {
-                return Err(format!("min_priority {p} is out of BACnet range 1..=16"));
-            }
+        if let Some(p) = min_priority
+            && !(1..=16).contains(&p)
+        {
+            return Err(format!("min_priority {p} is out of BACnet range 1..=16"));
         }
-        if let Some(p) = max_priority {
-            if !(1..=16).contains(&p) {
-                return Err(format!("max_priority {p} is out of BACnet range 1..=16"));
-            }
+        if let Some(p) = max_priority
+            && !(1..=16).contains(&p)
+        {
+            return Err(format!("max_priority {p} is out of BACnet range 1..=16"));
         }
-        if let (Some(min), Some(max)) = (min_priority, max_priority) {
-            if min > max {
-                return Err(format!(
-                    "min_priority ({min}) must be ≤ max_priority ({max})"
-                ));
-            }
+        if let (Some(min), Some(max)) = (min_priority, max_priority)
+            && min > max
+        {
+            return Err(format!(
+                "min_priority ({min}) must be ≤ max_priority ({max})"
+            ));
         }
         Ok(Self {
             allow_object_types,
@@ -162,14 +162,14 @@ impl WritePolicy {
         }
 
         // Per-object allowlist (if set, target must be on it).
-        if let Some(allow) = &self.allow_objects {
-            if !allow.contains(&target) {
-                return PolicyDecision::Deny(format!(
-                    "{}:{} is not on the per-object allowlist",
-                    crate::parse::object_type_name(target.object_type()),
-                    target.instance_number(),
-                ));
-            }
+        if let Some(allow) = &self.allow_objects
+            && !allow.contains(&target)
+        {
+            return PolicyDecision::Deny(format!(
+                "{}:{} is not on the per-object allowlist",
+                crate::parse::object_type_name(target.object_type()),
+                target.instance_number(),
+            ));
         }
 
         // Object-type denylist.
@@ -185,33 +185,33 @@ impl WritePolicy {
         }
 
         // Object-type allowlist.
-        if let Some(allow) = &self.allow_object_types {
-            if !allow.iter().any(|t| *t == target.object_type()) {
-                return PolicyDecision::Deny(format!(
-                    "object type '{}' is not on the type allowlist",
-                    crate::parse::object_type_name(target.object_type()),
-                ));
-            }
+        if let Some(allow) = &self.allow_object_types
+            && !allow.iter().any(|t| *t == target.object_type())
+        {
+            return PolicyDecision::Deny(format!(
+                "object type '{}' is not on the type allowlist",
+                crate::parse::object_type_name(target.object_type()),
+            ));
         }
 
         // Priority caps. Only enforced when the write specifies a priority —
         // non-commandable properties (e.g. config setpoints on AV) write
         // without one and aren't priority-gated.
         if let Some(p) = priority {
-            if let Some(min) = self.min_priority {
-                if p < min {
-                    return PolicyDecision::Deny(format!(
-                        "priority {p} is below the configured floor (min_priority = {min}; \
-                         priorities 1–8 are reserved for life-safety per ASHRAE 135-2020)"
-                    ));
-                }
+            if let Some(min) = self.min_priority
+                && p < min
+            {
+                return PolicyDecision::Deny(format!(
+                    "priority {p} is below the configured floor (min_priority = {min}; \
+                     priorities 1–8 are reserved for life-safety per ASHRAE 135-2020)"
+                ));
             }
-            if let Some(max) = self.max_priority {
-                if p > max {
-                    return PolicyDecision::Deny(format!(
-                        "priority {p} is above the configured ceiling (max_priority = {max})"
-                    ));
-                }
+            if let Some(max) = self.max_priority
+                && p > max
+            {
+                return PolicyDecision::Deny(format!(
+                    "priority {p} is above the configured ceiling (max_priority = {max})"
+                ));
             }
         }
 
