@@ -1,7 +1,8 @@
-//! MCP schedule tool — `read_schedule`.
+//! MCP schedule tools — `read_schedule`, `read_schedule_weekly`,
+//! `read_schedule_exceptions`.
 //!
-//! Reads scalar metadata from a BACnet Schedule object (object type 17) in
-//! one RPM round-trip:
+//! `read_schedule` returns scalar metadata from a BACnet Schedule object
+//! (object type 17) in one RPM round-trip:
 //!
 //! - `object-name` / `description` — human label
 //! - `present-value` — what the schedule is currently outputting
@@ -12,17 +13,19 @@
 //!   Decoded into a list of `<device:N>/type:instance/property[idx]` lines.
 //! - `status-flags`, `reliability`, `out-of-service` — health
 //!
-//! **Excluded from this read** (deferred to a follow-up PR): `weekly-schedule`
-//! and `exception-schedule`. Codex flagged that bundling them into the metadata
-//! RPM was unsafe — large populated arrays can blow Max-APDU on devices without
-//! segmentation, failing the whole RPM and surfacing none of the scalar fields.
+//! `read_schedule_weekly` and `read_schedule_exceptions` each issue a single
+//! ReadProperty for the matching constructed-array property and decode it
+//! via the `bacnet-services::schedule` codecs. They live as separate tools
+//! because Codex flagged (PR #6) that bundling these into the metadata RPM
+//! is unsafe — large populated arrays can blow Max-APDU on devices without
+//! segmentation, failing the whole RPM and surfacing none of the scalar
+//! fields. Single-property reads keep that risk off the metadata path.
 //!
-//! `bacnet-services 0.9` now ships codecs for both arrays
-//! (`decode_weekly_schedule`, `decode_exception_schedule`,
-//! `encode_weekly_schedule`, `encode_exception_schedule`), so the follow-up
-//! work can build dedicated `read_schedule_weekly` / `read_schedule_exceptions`
-//! tools — issuing single-property ReadProperty calls (not RPM) so a populated
-//! array can't take down the scalar fetch — plus matching write tools.
+//! Write tools (`write_schedule_weekly`, `write_schedule_exceptions`) are a
+//! deferred follow-up — `bacnet-services 0.9` ships the matching encoders
+//! (`encode_weekly_schedule`, `encode_exception_schedule`), but writes need
+//! to integrate with the safety policy + audit log the same way other
+//! commandable property writes do.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -31,10 +34,17 @@ use bacnet_encoding::primitives::decode_unsigned;
 use bacnet_encoding::tags::decode_tag;
 use bacnet_services::common::PropertyReference;
 use bacnet_services::rpm::ReadAccessSpecification;
+use bacnet_services::schedule::{decode_exception_schedule, decode_weekly_schedule};
+use bacnet_types::constructed::{
+    BACnetCalendarEntry, BACnetSpecialEvent, BACnetTimeValue, BACnetWeekNDay, SpecialEventPeriod,
+};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
-use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 
-use crate::parse::{decode_raw_property_to_json_with_context, object_type_name, property_name};
+use crate::parse::{
+    decode_raw_property_to_json, decode_raw_property_to_json_with_context, object_type_name,
+    property_name,
+};
 use crate::state::GatewayState;
 
 /// Properties pulled in the single RPM round-trip. Codex flagged the
@@ -282,6 +292,254 @@ fn format_reference(r: &DecodedReference) -> String {
     ));
     let array_part = r.array_index.map(|i| format!("[{i}]")).unwrap_or_default();
     format!("{device_part}{object_part}/{property_part}{array_part}")
+}
+
+// ─── read_schedule_weekly ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReadScheduleWeeklyParams {
+    #[schemars(description = "Device instance number hosting the Schedule object")]
+    pub device_instance: u32,
+    #[schemars(description = "Schedule object instance number")]
+    pub schedule_instance: u32,
+}
+
+pub async fn read_schedule_weekly_impl(
+    state: &GatewayState,
+    params: ReadScheduleWeeklyParams,
+) -> Result<String, String> {
+    // OID validation precedes transport so an out-of-range instance number
+    // surfaces as a parse error, not "client not started".
+    let oid = ObjectIdentifier::new(ObjectType::SCHEDULE, params.schedule_instance)
+        .map_err(|e| format!("{e}"))?;
+
+    let client = state.require_client()?;
+    let dev = state.resolve_device(params.device_instance).await?;
+
+    // Single ReadProperty (not RPM) for the array property — keeps a
+    // populated weekly-schedule from blowing Max-APDU on small devices and
+    // taking down a bundled scalar fetch with it.
+    let ack = client
+        .read_property(
+            &dev.mac_address,
+            oid,
+            PropertyIdentifier::WEEKLY_SCHEDULE,
+            None,
+        )
+        .await
+        .map_err(|e| format!("ReadProperty(weekly-schedule) failed: {e}"))?;
+
+    let days = decode_weekly_schedule(&ack.property_value)
+        .map_err(|e| format!("decode weekly-schedule: {e}"))?;
+
+    Ok(format_weekly_schedule(
+        params.device_instance,
+        params.schedule_instance,
+        &days,
+    ))
+}
+
+fn format_weekly_schedule(
+    device_instance: u32,
+    schedule_instance: u32,
+    days: &[Vec<BACnetTimeValue>; 7],
+) -> String {
+    // BACnet day-of-week numbering is 1=Monday..7=Sunday; the codec doc
+    // confirms `days[0]` is Monday.
+    const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let mut out =
+        format!("schedule:{schedule_instance} on device:{device_instance} weekly-schedule:\n");
+    let total: usize = days.iter().map(|d| d.len()).sum();
+    if total == 0 {
+        out.push_str("  <empty> — schedule outputs schedule-default every day\n");
+        return out;
+    }
+    for (i, day) in days.iter().enumerate() {
+        if day.is_empty() {
+            out.push_str(&format!("  {}: <no entries>\n", DAY_NAMES[i]));
+            continue;
+        }
+        out.push_str(&format!("  {}:\n", DAY_NAMES[i]));
+        for tv in day {
+            out.push_str(&format!(
+                "    {} = {}\n",
+                format_time(&tv.time),
+                format_time_value(tv)
+            ));
+        }
+    }
+    out
+}
+
+// ─── read_schedule_exceptions ───────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReadScheduleExceptionsParams {
+    #[schemars(description = "Device instance number hosting the Schedule object")]
+    pub device_instance: u32,
+    #[schemars(description = "Schedule object instance number")]
+    pub schedule_instance: u32,
+}
+
+pub async fn read_schedule_exceptions_impl(
+    state: &GatewayState,
+    params: ReadScheduleExceptionsParams,
+) -> Result<String, String> {
+    let oid = ObjectIdentifier::new(ObjectType::SCHEDULE, params.schedule_instance)
+        .map_err(|e| format!("{e}"))?;
+
+    let client = state.require_client()?;
+    let dev = state.resolve_device(params.device_instance).await?;
+
+    let ack = client
+        .read_property(
+            &dev.mac_address,
+            oid,
+            PropertyIdentifier::EXCEPTION_SCHEDULE,
+            None,
+        )
+        .await
+        .map_err(|e| format!("ReadProperty(exception-schedule) failed: {e}"))?;
+
+    let events = decode_exception_schedule(&ack.property_value)
+        .map_err(|e| format!("decode exception-schedule: {e}"))?;
+
+    Ok(format_exception_schedule(
+        params.device_instance,
+        params.schedule_instance,
+        &events,
+    ))
+}
+
+fn format_exception_schedule(
+    device_instance: u32,
+    schedule_instance: u32,
+    events: &[BACnetSpecialEvent],
+) -> String {
+    let mut out = format!(
+        "schedule:{schedule_instance} on device:{device_instance} exception-schedule ({} entr{}):\n",
+        events.len(),
+        if events.len() == 1 { "y" } else { "ies" },
+    );
+    if events.is_empty() {
+        out.push_str("  <empty> — no exception periods configured\n");
+        return out;
+    }
+    for (i, event) in events.iter().enumerate() {
+        out.push_str(&format!(
+            "  [{}] {} priority={}:\n",
+            i + 1,
+            format_special_event_period(&event.period),
+            event.event_priority,
+        ));
+        if event.list_of_time_values.is_empty() {
+            out.push_str("      <no time-values>\n");
+            continue;
+        }
+        for tv in &event.list_of_time_values {
+            out.push_str(&format!(
+                "      {} = {}\n",
+                format_time(&tv.time),
+                format_time_value(tv),
+            ));
+        }
+    }
+    out
+}
+
+// ─── shared formatters ──────────────────────────────────────────────────────
+
+/// Render a BACnetTimeValue's polymorphic `value` field. The bytes are
+/// raw application-tagged BACnet encoding, so we route them through the
+/// same decoder used for scalar property values to keep output consistent.
+fn format_time_value(tv: &BACnetTimeValue) -> String {
+    if tv.value.is_empty() {
+        return "<empty>".into();
+    }
+    let json = decode_raw_property_to_json(&tv.value);
+    match json.get("value") {
+        Some(v) => v.to_string(),
+        None => json.to_string(),
+    }
+}
+
+fn format_time(t: &Time) -> String {
+    let h = field_or_star(t.hour);
+    let m = field_or_star(t.minute);
+    let s = field_or_star(t.second);
+    if t.hundredths == Time::UNSPECIFIED || t.hundredths == 0 {
+        format!("{h}:{m}:{s}")
+    } else {
+        format!("{h}:{m}:{s}.{:02}", t.hundredths)
+    }
+}
+
+fn format_date(d: &Date) -> String {
+    let y = if d.year == Date::UNSPECIFIED {
+        "****".to_string()
+    } else {
+        format!("{:04}", 1900 + d.year as u16)
+    };
+    let m = field_or_star(d.month);
+    let day = field_or_star(d.day);
+    format!("{y}-{m}-{day}")
+}
+
+fn field_or_star(v: u8) -> String {
+    if v == 0xFF {
+        "**".into()
+    } else {
+        format!("{v:02}")
+    }
+}
+
+fn format_calendar_entry(e: &BACnetCalendarEntry) -> String {
+    match e {
+        BACnetCalendarEntry::Date(d) => format!("date={}", format_date(d)),
+        BACnetCalendarEntry::DateRange(r) => format!(
+            "date-range={}..{}",
+            format_date(&r.start_date),
+            format_date(&r.end_date),
+        ),
+        BACnetCalendarEntry::WeekNDay(w) => format!("week-n-day={}", format_week_n_day(w)),
+    }
+}
+
+fn format_week_n_day(w: &BACnetWeekNDay) -> String {
+    // Compact `month/week-of-month/day-of-week` rendering with `*` for
+    // wildcards. Spec values for `month` 13/14 mean odd/even; surface those
+    // explicitly so an agent doesn't need to look up the magic numbers.
+    let month = match w.month {
+        BACnetWeekNDay::ANY => "*".to_string(),
+        13 => "odd".into(),
+        14 => "even".into(),
+        n => n.to_string(),
+    };
+    let week = if w.week_of_month == BACnetWeekNDay::ANY {
+        "*".into()
+    } else {
+        w.week_of_month.to_string()
+    };
+    let dow = if w.day_of_week == BACnetWeekNDay::ANY {
+        "*".to_string()
+    } else {
+        // 1=Mon..7=Sun matches BACnet day-of-week numbering.
+        const NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        let idx = (w.day_of_week as usize).saturating_sub(1).min(6);
+        NAMES[idx].to_string()
+    };
+    format!("{month}/{week}/{dow}")
+}
+
+fn format_special_event_period(p: &SpecialEventPeriod) -> String {
+    match p {
+        SpecialEventPeriod::CalendarEntry(e) => format_calendar_entry(e),
+        SpecialEventPeriod::CalendarReference(oid) => format!(
+            "calendar-ref={}:{}",
+            object_type_name(oid.object_type()),
+            oid.instance_number(),
+        ),
+    }
 }
 
 // (no items below the test module — clippy::items_after_test_module enforced)
