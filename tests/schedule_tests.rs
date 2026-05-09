@@ -3,6 +3,10 @@
 #![cfg(feature = "mcp")]
 
 use bacnet_mcp::config::{DeviceConfig, GatewayConfig, McpConfig, TransportsConfig};
+use bacnet_mcp::mcp::schedule_write::{
+    ExceptionInput, PeriodInput, ScheduleValueInput, TimeValueInput, WriteScheduleExceptionsParams,
+    WriteScheduleWeeklyParams, write_schedule_exceptions_impl, write_schedule_weekly_impl,
+};
 use bacnet_mcp::mcp::schedules::{
     ReadScheduleExceptionsParams, ReadScheduleParams, ReadScheduleWeeklyParams,
     read_schedule_exceptions_impl, read_schedule_impl, read_schedule_weekly_impl,
@@ -143,4 +147,254 @@ async fn read_schedule_exceptions_validates_oid_pre_dispatch() {
         !err.contains("not started"),
         "OID validation must precede transport, got: {err}"
     );
+}
+
+// ─── write_schedule_weekly ──────────────────────────────────────────────────
+
+fn empty_week() -> Vec<Vec<TimeValueInput>> {
+    (0..7).map(|_| Vec::new()).collect()
+}
+
+#[tokio::test]
+async fn write_schedule_weekly_dry_run_passes_without_client() {
+    // dry_run short-circuits before require_client / resolve_device, so an
+    // unstarted client must produce a dry-run report rather than an error.
+    let state = test_state();
+    let result = write_schedule_weekly_impl(
+        &state,
+        WriteScheduleWeeklyParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            days: empty_week(),
+            dry_run: true,
+        },
+    )
+    .await;
+    let out = result.expect("dry-run should succeed before require_client");
+    assert!(out.starts_with("[dry-run]"));
+}
+
+#[tokio::test]
+async fn write_schedule_weekly_rejects_wrong_day_count() {
+    // 6 days instead of 7 — must fail pre-dispatch with a clear message.
+    let state = test_state();
+    let mut days = empty_week();
+    days.pop();
+    let result = write_schedule_weekly_impl(
+        &state,
+        WriteScheduleWeeklyParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            days,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("7"), "want 7-day error, got: {err}");
+}
+
+#[tokio::test]
+async fn write_schedule_weekly_rejects_bad_time() {
+    let state = test_state();
+    let mut days = empty_week();
+    days[0].push(TimeValueInput {
+        time: "not-a-time".into(),
+        value: ScheduleValueInput::Real(72.0),
+    });
+    let result = write_schedule_weekly_impl(
+        &state,
+        WriteScheduleWeeklyParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            days,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("time"), "want time error, got: {err}");
+}
+
+#[tokio::test]
+async fn write_schedule_weekly_dry_run_records_allow_audit() {
+    let state = test_state();
+    let _ = write_schedule_weekly_impl(
+        &state,
+        WriteScheduleWeeklyParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            days: empty_week(),
+            dry_run: true,
+        },
+    )
+    .await
+    .unwrap();
+    let entries = state.audit.snapshot(0);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.tool == "write_schedule_weekly" && e.decision == "allow" && e.dry_run),
+        "expected an allow+dry-run audit entry; got: {entries:?}"
+    );
+}
+
+#[tokio::test]
+async fn write_schedule_weekly_real_write_no_client_audits_pre_send_failure() {
+    // Real write (dry_run = false), no client → require_client fails AFTER
+    // policy gate passes. Expect (a) no deny (policy passed), (b) an err
+    // entry from require_client failure.
+    let state = test_state();
+    let result = write_schedule_weekly_impl(
+        &state,
+        WriteScheduleWeeklyParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            days: empty_week(),
+            dry_run: false,
+        },
+    )
+    .await;
+    assert!(result.unwrap_err().contains("not started"));
+    let entries = state.audit.snapshot(0);
+    let our: Vec<_> = entries
+        .iter()
+        .filter(|e| e.tool == "write_schedule_weekly")
+        .collect();
+    assert!(
+        our.iter().any(|e| e.decision == "error"),
+        "expected an error audit entry; got: {our:?}"
+    );
+}
+
+// ─── write_schedule_exceptions ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn write_schedule_exceptions_dry_run_with_concrete_date() {
+    let state = test_state();
+    let events = vec![ExceptionInput {
+        period: PeriodInput::Date("2026-12-25".into()),
+        time_values: vec![TimeValueInput {
+            time: "00:00".into(),
+            value: ScheduleValueInput::Real(60.0),
+        }],
+        // Priority 10 clears the default safety floor (`min_priority = 9`);
+        // exception events are now policy-gated per-event.
+        priority: 10,
+    }];
+    let result = write_schedule_exceptions_impl(
+        &state,
+        WriteScheduleExceptionsParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            events,
+            dry_run: true,
+        },
+    )
+    .await;
+    let out = result.expect("dry-run with valid concrete date should pass");
+    assert!(out.contains("[dry-run]"));
+    assert!(out.contains("1 exception events"));
+}
+
+#[tokio::test]
+async fn write_schedule_exceptions_dry_run_with_week_n_day_pattern() {
+    let state = test_state();
+    let events = vec![ExceptionInput {
+        period: PeriodInput::WeekNDay("*/1/Mon".into()),
+        time_values: vec![TimeValueInput {
+            time: "08:00".into(),
+            value: ScheduleValueInput::Real(70.0),
+        }],
+        priority: 10,
+    }];
+    let result = write_schedule_exceptions_impl(
+        &state,
+        WriteScheduleExceptionsParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            events,
+            dry_run: true,
+        },
+    )
+    .await;
+    let out = result.unwrap();
+    assert!(out.contains("[dry-run]"));
+}
+
+#[tokio::test]
+async fn write_schedule_exceptions_rejects_priority_out_of_range() {
+    let state = test_state();
+    let events = vec![ExceptionInput {
+        period: PeriodInput::Date("2026-12-25".into()),
+        time_values: vec![],
+        priority: 17,
+    }];
+    let result = write_schedule_exceptions_impl(
+        &state,
+        WriteScheduleExceptionsParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            events,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("priority"));
+    assert!(err.contains("17"));
+}
+
+#[tokio::test]
+async fn write_schedule_exceptions_rejects_bad_period_string() {
+    let state = test_state();
+    let events = vec![ExceptionInput {
+        period: PeriodInput::Date("not-a-date".into()),
+        time_values: vec![],
+        // Priority must clear the safety floor so the test reaches the
+        // date-parse error path instead of stopping at the policy gate.
+        priority: 10,
+    }];
+    let result = write_schedule_exceptions_impl(
+        &state,
+        WriteScheduleExceptionsParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            events,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("date"));
+}
+
+#[tokio::test]
+async fn write_schedule_exceptions_enforces_priority_floor_per_event() {
+    // Codex P1 (PR #13): exception events embed their own priority and
+    // must clear `min_priority`/`max_priority`. Default safety floor is 9;
+    // priority 5 must be rejected by the policy gate even though the
+    // wider object-level allow check would pass.
+    let state = test_state();
+    let events = vec![ExceptionInput {
+        period: PeriodInput::Date("2026-12-25".into()),
+        time_values: vec![TimeValueInput {
+            time: "00:00".into(),
+            value: ScheduleValueInput::Real(60.0),
+        }],
+        priority: 5,
+    }];
+    let result = write_schedule_exceptions_impl(
+        &state,
+        WriteScheduleExceptionsParams {
+            device_instance: 1234,
+            schedule_instance: 1,
+            events,
+            dry_run: true,
+        },
+    )
+    .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("Policy denied"), "got: {err}");
+    assert!(err.contains("min_priority"), "got: {err}");
 }
