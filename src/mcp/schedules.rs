@@ -475,14 +475,39 @@ fn format_time(t: &Time) -> String {
 }
 
 fn format_date(d: &Date) -> String {
+    // BACnet Date carries pattern semantics, not just calendar values:
+    //   month: 1-12 normal, 13=odd, 14=even, 0xFF=any
+    //   day:   1-31 normal, 32=last-of-month, 33=odd, 34=even, 0xFF=any
+    //   day_of_week: 1=Mon..7=Sun, 0xFF=any
+    // Codex P2 flagged that printing these raw makes patterns look like
+    // impossible calendar dates and that dropping day_of_week makes
+    // distinct exception patterns collapse to the same string.
     let y = if d.year == Date::UNSPECIFIED {
         "****".to_string()
     } else {
         format!("{:04}", 1900 + d.year as u16)
     };
-    let m = field_or_star(d.month);
-    let day = field_or_star(d.day);
-    format!("{y}-{m}-{day}")
+    let m = match d.month {
+        Date::UNSPECIFIED => "**".to_string(),
+        13 => "odd".into(),
+        14 => "even".into(),
+        n => format!("{n:02}"),
+    };
+    let day = match d.day {
+        Date::UNSPECIFIED => "**".to_string(),
+        32 => "last".into(),
+        33 => "odd".into(),
+        34 => "even".into(),
+        n => format!("{n:02}"),
+    };
+    let dow = if d.day_of_week == Date::UNSPECIFIED {
+        String::new()
+    } else {
+        const NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        let idx = (d.day_of_week as usize).saturating_sub(1).min(6);
+        format!("-{}", NAMES[idx])
+    };
+    format!("{y}-{m}-{day}{dow}")
 }
 
 fn field_or_star(v: u8) -> String {
@@ -582,6 +607,99 @@ mod tests {
             property_label(PropertyIdentifier::SCHEDULE_DEFAULT),
             "schedule-default"
         );
+    }
+
+    // ─── format_date — BACnet pattern semantics (Codex P2 PR #11) ───────────
+
+    #[test]
+    fn format_date_concrete_includes_day_of_week_when_specified() {
+        // 2026-12-25 was a Friday. BACnet day-of-week 5 = Fri.
+        let d = Date {
+            year: 126, // 1900 + 126 = 2026
+            month: 12,
+            day: 25,
+            day_of_week: 5,
+        };
+        assert_eq!(format_date(&d), "2026-12-25-Fri");
+    }
+
+    #[test]
+    fn format_date_concrete_omits_unspecified_day_of_week() {
+        let d = Date {
+            year: 126,
+            month: 12,
+            day: 25,
+            day_of_week: Date::UNSPECIFIED,
+        };
+        assert_eq!(format_date(&d), "2026-12-25");
+    }
+
+    #[test]
+    fn format_date_renders_month_sentinels() {
+        // month=13 = odd-numbered months, month=14 = even-numbered months.
+        // Codex P2: must not render these as calendar 13/14.
+        let odd = Date {
+            year: Date::UNSPECIFIED,
+            month: 13,
+            day: 1,
+            day_of_week: Date::UNSPECIFIED,
+        };
+        let even = Date {
+            year: Date::UNSPECIFIED,
+            month: 14,
+            day: 1,
+            day_of_week: Date::UNSPECIFIED,
+        };
+        assert_eq!(format_date(&odd), "****-odd-01");
+        assert_eq!(format_date(&even), "****-even-01");
+    }
+
+    #[test]
+    fn format_date_renders_day_sentinels() {
+        // day=32 = last-of-month, 33 = odd-numbered days, 34 = even.
+        // Renders should make these unambiguous instead of "32".
+        let last = Date {
+            year: Date::UNSPECIFIED,
+            month: Date::UNSPECIFIED,
+            day: 32,
+            day_of_week: Date::UNSPECIFIED,
+        };
+        let odd_day = Date {
+            year: Date::UNSPECIFIED,
+            month: Date::UNSPECIFIED,
+            day: 33,
+            day_of_week: Date::UNSPECIFIED,
+        };
+        let even_day = Date {
+            year: Date::UNSPECIFIED,
+            month: Date::UNSPECIFIED,
+            day: 34,
+            day_of_week: Date::UNSPECIFIED,
+        };
+        assert_eq!(format_date(&last), "****-**-last");
+        assert_eq!(format_date(&odd_day), "****-**-odd");
+        assert_eq!(format_date(&even_day), "****-**-even");
+    }
+
+    #[test]
+    fn format_date_combines_pattern_with_day_of_week() {
+        // "every Monday in odd-numbered months" — distinct from "every
+        // Tuesday in odd-numbered months", but without day_of_week the two
+        // would render identically.
+        let mon = Date {
+            year: Date::UNSPECIFIED,
+            month: 13,
+            day: Date::UNSPECIFIED,
+            day_of_week: 1,
+        };
+        let tue = Date {
+            year: Date::UNSPECIFIED,
+            month: 13,
+            day: Date::UNSPECIFIED,
+            day_of_week: 2,
+        };
+        assert_eq!(format_date(&mon), "****-odd-**-Mon");
+        assert_eq!(format_date(&tue), "****-odd-**-Tue");
     }
 
     fn encode_object_id(buf: &mut BytesMut, tag: u8, ot: ObjectType, instance: u32) {
