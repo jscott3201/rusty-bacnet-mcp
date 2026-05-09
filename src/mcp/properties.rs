@@ -122,32 +122,32 @@ fn default_present_value() -> String {
 /// This helper threads the audit append through every error/early-out path.
 /// `target` and `property` reflect whatever the caller passed — even on
 /// pre-parse failures, the audit record names what the agent tried to do.
-struct WriteAudit<'a> {
-    state: &'a GatewayState,
-    tool: &'static str,
-    target: String,
-    property: String,
-    priority: Option<u8>,
-    dry_run: bool,
+pub(super) struct WriteAudit<'a> {
+    pub(super) state: &'a GatewayState,
+    pub(super) tool: &'static str,
+    pub(super) target: String,
+    pub(super) property: String,
+    pub(super) priority: Option<u8>,
+    pub(super) dry_run: bool,
 }
 
 impl<'a> WriteAudit<'a> {
     /// Record `deny` (policy or pre-flight validation refused the write) and
     /// return `reason` so the caller can `?` it back to the MCP client.
-    fn deny(&self, reason: String) -> String {
+    pub(super) fn deny(&self, reason: String) -> String {
         self.append("deny", reason)
     }
 
     /// Record `error` (validation passed but a downstream / network step
     /// failed). Returned for `?` by the caller.
-    fn err(&self, reason: String) -> String {
+    pub(super) fn err(&self, reason: String) -> String {
         self.append("error", reason)
     }
 
     /// Record `allow` (intent). Called BEFORE the BACnet `await` for real
     /// writes so a crash between dispatch and response still leaves a trace.
     /// Also called for `dry_run = true` (the dry-run IS the intent).
-    fn allow(&self) {
+    pub(super) fn allow(&self) {
         self.append("allow", String::new());
     }
 

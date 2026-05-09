@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod objects;
 pub mod properties;
 pub mod reference;
+pub mod schedule_write;
 pub mod schedules;
 pub mod topology;
 pub mod trend;
@@ -220,6 +221,26 @@ impl GatewayMcp {
         params: Parameters<schedules::ReadScheduleExceptionsParams>,
     ) -> Result<String, String> {
         schedules::read_schedule_exceptions_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Replace the entire weekly-schedule of a BACnet Schedule object atomically. Takes 7 lists (Mon..Sun) of (time, value) entries. Values use tagged JSON: {\"real\": 72.0}, {\"boolean\": true}, {\"unsigned\": 3}, or {\"null\": null}. Times are 'HH:MM' or 'HH:MM:SS'. Whole-array replacement matches the WriteProperty semantics for this property — there's no per-element write in the spec. Routes through the same safety policy + audit log as write_property. Pass dry_run: true to validate without sending. v1 limitation: only Real / Boolean / Unsigned / Null value types (other primitives v2)."
+    )]
+    async fn write_schedule_weekly(
+        &self,
+        params: Parameters<schedule_write::WriteScheduleWeeklyParams>,
+    ) -> Result<String, String> {
+        schedule_write::write_schedule_weekly_impl(&self.state, params.0).await
+    }
+
+    #[tool(
+        description = "Replace the entire exception-schedule of a BACnet Schedule object atomically. Each event has a period (tagged: {\"date\": \"YYYY-MM-DD\"} optionally with '-Mon..-Sun' suffix, or {\"week_n_day\": \"month/week/dow\"} pattern matching format_week_n_day output), a list of time-values, and a priority 1..=16 for conflict resolution against the weekly schedule. Whole-list replacement (WriteProperty semantics). Routes through write_property's safety policy + audit log. Pass dry_run: true to validate without sending. v1 limitations: only Date and WeekNDay periods (DateRange / CalendarReference v2); only Real / Boolean / Unsigned / Null value types; only concrete dates (sentinel month/day patterns v2)."
+    )]
+    async fn write_schedule_exceptions(
+        &self,
+        params: Parameters<schedule_write::WriteScheduleExceptionsParams>,
+    ) -> Result<String, String> {
+        schedule_write::write_schedule_exceptions_impl(&self.state, params.0).await
     }
 
     // --- Trend log tools (ReadRange-backed) ---
