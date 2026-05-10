@@ -195,6 +195,16 @@ async fn main_loop(
     }
 
     poll_handle.abort();
+    // Close the channel from the receiver side. The event task selects on
+    // `shutdown.cancelled()` OR `tx.send().is_err()` — on the Detach path
+    // `shutdown` is intentionally left alive so the HTTP MCP server keeps
+    // running, which means dropping the receiver is the only signal that
+    // ends the event task. Without this, `event_handle.await` below hangs
+    // forever and F12 never returns to `run_tui`. The Quit path also relies
+    // on this: `tui::run` only cancels `shutdown` AFTER `main_loop` returns,
+    // so without dropping the receiver Quit would hang too (latent bug —
+    // Codex P1 on PR #14 caught it via the new Detach exposure).
+    drop(events);
     let _ = event_handle.await;
     // Detach wins over quit if both happen to be set (shouldn't, but be safe):
     // detach implies the user explicitly chose to keep the daemon alive.
