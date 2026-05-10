@@ -41,14 +41,27 @@ use crate::tui::tabs::operate::OpForm;
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
+/// How the TUI exited. Drives whether the caller (`main.rs::run_tui`) tears
+/// the daemon down or keeps it running headless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuiExit {
+    /// Operator quit (q / Ctrl-C / external shutdown). Daemon should stop.
+    Quit,
+    /// Operator detached (F12). Daemon should keep serving MCP — the caller
+    /// must wait on its own shutdown signal (SIGINT/SIGTERM) to stop.
+    Detached,
+}
+
 /// Public entry point. Sets up the terminal, runs the loop, restores the
 /// terminal on exit (or panic). `shutdown` propagates Ctrl-C / SIGTERM from
-/// outside; the TUI also cancels it on its own quit. `log_buffer` is the
-/// shared ring buffer that the tracing Layer (installed by `main.rs`) writes
-/// into and the Observe tab reads from. `http_listening` reflects whether the
-/// streamable-HTTP MCP transport was actually started for this session — the
-/// Observe tab uses this for the UP/DOWN badge instead of inferring from
-/// config presence.
+/// outside; on a Quit exit the TUI cancels it so the rest of the daemon
+/// tears down. On a Detached exit the token is left untouched so the BACnet
+/// stack and HTTP MCP server keep running. `log_buffer` is the shared ring
+/// buffer that the tracing Layer (installed by `main.rs`) writes into and the
+/// Observe tab reads from. `http_listening` reflects whether the streamable-
+/// HTTP MCP transport was actually started for this session — the Observe
+/// tab uses this for the UP/DOWN badge instead of inferring from config
+/// presence, and the F12 detach handler refuses when it's false.
 pub async fn run(
     state: GatewayState,
     config: GatewayConfig,
@@ -56,7 +69,7 @@ pub async fn run(
     log_buffer: LogBuffer,
     http_listening: bool,
     shutdown: CancellationToken,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<TuiExit, Box<dyn std::error::Error + Send + Sync>> {
     // Read the on-disk config text so the editor starts mirroring the file.
     let config_text =
         std::fs::read_to_string(&config_path).map_err(|e| format!("read {config_path}: {e}"))?;
@@ -77,8 +90,23 @@ pub async fn run(
     .await;
 
     restore_terminal(&mut terminal)?;
-    shutdown.cancel();
-    result.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
+    match result {
+        Ok(TuiExit::Quit) => {
+            shutdown.cancel();
+            Ok(TuiExit::Quit)
+        }
+        Ok(TuiExit::Detached) => {
+            // Leave `shutdown` alive — HTTP MCP server and BACnet stack
+            // keep going. Caller will await its own signal handler.
+            Ok(TuiExit::Detached)
+        }
+        Err(e) => {
+            // Any TUI-internal failure tears the daemon down too — we have
+            // no way to surface it once headless.
+            shutdown.cancel();
+            Err(e.into())
+        }
+    }
 }
 
 fn setup_terminal() -> io::Result<Tui> {
@@ -120,7 +148,7 @@ async fn main_loop(
     log_buffer: LogBuffer,
     http_listening: bool,
     shutdown: CancellationToken,
-) -> Result<(), String> {
+) -> Result<TuiExit, String> {
     let mut app = App::new(
         state.clone(),
         config,
@@ -140,7 +168,7 @@ async fn main_loop(
     let poll_handle = spawn_device_poller(state.clone(), sender.clone(), shutdown.clone());
 
     while let Some(ev) = events.recv().await {
-        if app.should_quit || shutdown.is_cancelled() {
+        if app.should_quit || app.should_detach || shutdown.is_cancelled() {
             break;
         }
 
@@ -165,7 +193,13 @@ async fn main_loop(
 
     poll_handle.abort();
     let _ = event_handle.await;
-    Ok(())
+    // Detach wins over quit if both happen to be set (shouldn't, but be safe):
+    // detach implies the user explicitly chose to keep the daemon alive.
+    if app.should_detach {
+        Ok(TuiExit::Detached)
+    } else {
+        Ok(TuiExit::Quit)
+    }
 }
 
 async fn refresh_observe_cache(app: &mut App, state: &GatewayState) {
@@ -206,6 +240,15 @@ async fn execute_action(app: &mut App, action: Action, state: &GatewayState, _se
         Action::None => {}
         Action::Quit => {
             app.should_quit = true;
+        }
+        Action::DetachToHeadless => {
+            // Logged at info — this transition is operationally significant
+            // (operator just left the daemon running unattended).
+            tracing::info!(
+                "TUI detach requested (F12) — tearing down render loop, leaving \
+                 BACnet stack and HTTP MCP server running"
+            );
+            app.should_detach = true;
         }
         Action::ToggleHelp => {
             app.help_visible = !app.help_visible;

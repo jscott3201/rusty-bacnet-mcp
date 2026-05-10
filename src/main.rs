@@ -291,11 +291,42 @@ async fn run_tui(cli: Cli, mut config: GatewayConfig) -> Result<(), Box<dyn std:
     )
     .await;
 
+    // On detach (F12) the TUI tore down the render loop but left `shutdown`
+    // alive so the HTTP MCP server keeps serving. Announce on stderr — now
+    // safe because the alternate screen has been left — and wait for an
+    // external signal (Ctrl-C / SIGTERM) before joining the HTTP task.
+    if matches!(result, Ok(bacnet_mcp::tui::TuiExit::Detached)) {
+        announce_detach(&config, &cli);
+        wait_for_shutdown(shutdown.clone()).await;
+    }
+
     if let Some(handle) = http_handle {
         let _ = handle.await;
     }
     drop(built);
-    result.map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })
+    result
+        .map(|_| ())
+        .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })
+}
+
+/// Print the post-detach announcement to stderr. The TUI's alternate screen
+/// has just been left, so this lands directly in the operator's shell.
+///
+/// Includes the PID (for `kill <pid>` later) and the HTTP bind (so it's
+/// obvious what's still being served), plus a one-line tmux/disown hint —
+/// the original detach plan called out that the operator backgrounds the
+/// shell job manually since Option A doesn't double-fork.
+fn announce_detach(config: &GatewayConfig, cli: &Cli) {
+    let pid = std::process::id();
+    let bind = resolved_http_bind(config, cli).unwrap_or_else(default_http_bind_string);
+    eprintln!();
+    eprintln!("─────────────────────────────────────────────────────────");
+    eprintln!(" bacnet-mcp: TUI detached. Daemon still running.");
+    eprintln!("   PID:       {pid}");
+    eprintln!("   MCP HTTP:  http://{bind}/mcp");
+    eprintln!("   Stop:      kill {pid}   (or Ctrl-C in this shell)");
+    eprintln!("   Background:  Ctrl-Z; bg; disown");
+    eprintln!("─────────────────────────────────────────────────────────");
 }
 
 fn init_tracing_tui(

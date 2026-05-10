@@ -145,6 +145,7 @@ fn render_help_popup(frame: &mut Frame) {
         Line::raw("  Tab / Shift-Tab    cycle tabs"),
         Line::raw("  q / Ctrl-C         quit"),
         Line::raw("  F1                 toggle this help"),
+        Line::raw("  F12                detach (TUI exits, daemon keeps running)"),
         Line::raw("  Ctrl-M             toggle mouse capture"),
         Line::raw(""),
         Line::from(Span::styled("Configure", theme::HEADER_TITLE)),

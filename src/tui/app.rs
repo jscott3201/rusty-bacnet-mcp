@@ -31,6 +31,11 @@ pub enum Action {
     None,
     /// Quit the TUI cleanly.
     Quit,
+    /// Detach the TUI to headless mode (F12). The render loop tears down and
+    /// the terminal is restored, but the BACnet stack and HTTP MCP server keep
+    /// running in the same process. Once detached, no reconnect — operator
+    /// must restart the daemon to get the TUI back.
+    DetachToHeadless,
     /// Validate and reload config from the editor buffer (F9).
     SaveAndReload,
     /// Run the active operate form (Enter inside operate tab).
@@ -57,6 +62,10 @@ pub struct App {
     pub mouse_capture: bool,
     pub help_visible: bool,
     pub should_quit: bool,
+    /// Set by F12. When true the run loop breaks like `should_quit` but the
+    /// caller skips `shutdown.cancel()` so the BACnet stack + HTTP MCP server
+    /// keep running after the TUI tears down.
+    pub should_detach: bool,
 
     pub configure: ConfigureState,
     pub observe: ObserveState,
@@ -86,6 +95,7 @@ impl App {
             mouse_capture: true,
             help_visible: false,
             should_quit: false,
+            should_detach: false,
             configure: ConfigureState::new(initial_config_text),
             observe: ObserveState::new(),
             operate: OperateState::new(),
@@ -122,6 +132,9 @@ impl App {
         }
         if matches!(k.code, KeyCode::F(1)) {
             return Action::ToggleHelp;
+        }
+        if matches!(k.code, KeyCode::F(12)) {
+            return self.request_detach();
         }
         if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('m')) {
             return Action::ToggleMouse;
@@ -289,6 +302,21 @@ impl App {
         }
     }
 
+    /// F12 handler. Refuses if the HTTP MCP server isn't listening — without
+    /// HTTP the daemon has no outside surface, so detaching would leave a
+    /// process running that nothing can reach. Operator should `q` instead.
+    fn request_detach(&mut self) -> Action {
+        if !self.http_listening {
+            self.toast = Some((
+                Instant::now(),
+                StatusKind::Warn,
+                "Detach refused: no HTTP MCP transport — the daemon would be unreachable. Press q to quit instead.".into(),
+            ));
+            return Action::None;
+        }
+        Action::DetachToHeadless
+    }
+
     /// Drop expired toasts (older than 4 seconds).
     pub fn cull_toast(&mut self) {
         if let Some((at, _, _)) = self.toast
@@ -326,5 +354,100 @@ fn key_to_input(k: KeyEvent) -> Input {
         ctrl: k.modifiers.contains(KeyModifiers::CONTROL),
         alt: k.modifiers.contains(KeyModifiers::ALT),
         shift: k.modifiers.contains(KeyModifiers::SHIFT),
+    }
+}
+
+#[cfg(test)]
+mod detach_tests {
+    use super::*;
+    use crate::config::{BipConfig, DeviceConfig, McpConfig, TransportsConfig};
+    use bacnet_objects::database::ObjectDatabase;
+    use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+
+    fn baseline_config() -> GatewayConfig {
+        GatewayConfig {
+            mcp: McpConfig {
+                api_key: None,
+                read_only: true,
+                http: None,
+                safety: None,
+                audit: None,
+            },
+            device: DeviceConfig {
+                instance: 389001,
+                name: "Test".into(),
+                vendor_id: 999,
+                description: "test".into(),
+            },
+            transports: TransportsConfig {
+                bip: Some(BipConfig {
+                    interface: "0.0.0.0".into(),
+                    port: 47808,
+                    broadcast: "192.168.1.255".into(),
+                    network_number: 1,
+                }),
+                sc: None,
+            },
+            bbmd: None,
+            foreign_device: None,
+            routes: vec![],
+            objects: vec![],
+        }
+    }
+
+    fn make_app(http_listening: bool) -> App {
+        let config = baseline_config();
+        let state = GatewayState::new(ObjectDatabase::new(), config.clone());
+        App::new(
+            state,
+            config,
+            "/tmp/test.json".into(),
+            CancellationToken::new(),
+            "{}".into(),
+            LogBuffer::default(),
+            http_listening,
+        )
+    }
+
+    fn f12() -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::F(12),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: ratatui::crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn f12_returns_detach_action_when_http_listening() {
+        let mut app = make_app(true);
+        let action = app.handle_event(Event::Key(f12()));
+        assert!(matches!(action, Action::DetachToHeadless));
+        // App state itself isn't flipped here — the run loop sets should_detach
+        // when it executes the action. Flag stays false until execute_action.
+        assert!(!app.should_detach);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn f12_refused_when_http_not_listening() {
+        let mut app = make_app(false);
+        let action = app.handle_event(Event::Key(f12()));
+        assert!(matches!(action, Action::None));
+        // Operator gets a toast explaining why nothing happened — silence
+        // would feel like a broken keybind.
+        let toast = app.toast.expect("expected refusal toast");
+        assert!(matches!(toast.1, StatusKind::Warn));
+        assert!(toast.2.contains("no HTTP MCP transport"));
+    }
+
+    #[test]
+    fn f12_works_from_configure_tab_text_editor() {
+        // The Configure tab swallows most keys to feed the textarea editor.
+        // F12 must NOT be one of them — it's a global keybind.
+        let mut app = make_app(true);
+        app.tab = Tab::Configure;
+        let action = app.handle_event(Event::Key(f12()));
+        assert!(matches!(action, Action::DetachToHeadless));
     }
 }
