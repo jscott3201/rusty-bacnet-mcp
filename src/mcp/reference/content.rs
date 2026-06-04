@@ -108,6 +108,7 @@ Token-efficient usage:
   - Prefer read_schedule before schedule array reads so you know the target refs.
   - Prefer get_trend_log_info before read_trend_log so you can choose a bounded range.
   - Prefer write_property_multiple for coordinated batch writes after dry-run.
+  - Prefer COV subscriptions over repeated polling for changing values.
   - Fetch detailed reference resources only when a workflow needs the background.
 
 Tool families:
@@ -128,6 +129,11 @@ Tool families:
     write_property writes one property value.
     write_property_multiple writes multiple values in one WPM request.
     relinquish_at_priority releases one command priority slot by writing NULL.
+
+  change-of-value:
+    subscribe_cov starts a transient notification subscription; dry-run first.
+    poll_cov_notifications drains queued notifications with a bounded limit.
+    unsubscribe_cov cancels by object and subscriber process id.
 
   alarms and events:
     get_alarm_summary is the cheap active-alarm triage call.

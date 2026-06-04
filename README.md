@@ -95,6 +95,7 @@ Remote reads: read_property, read_property_multiple, read_priority_array,
   enumerate_objects, get_device_capabilities
 Remote writes: write_property, write_property_multiple, relinquish_at_priority
 Alarms/events: get_alarm_summary, get_event_information, acknowledge_alarm
+COV: subscribe_cov, unsubscribe_cov, poll_cov_notifications
 Schedules: read_schedule, read_schedule_weekly, read_schedule_exceptions,
   write_schedule_weekly, write_schedule_exceptions
 Trends: get_trend_log_info, read_trend_log

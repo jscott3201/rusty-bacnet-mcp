@@ -4,6 +4,7 @@
 
 pub mod alarms;
 pub mod bulk;
+pub mod cov;
 pub mod diagnostics;
 pub mod discovery;
 pub mod objects;
@@ -147,6 +148,32 @@ impl GatewayMcp {
         params: Parameters<bulk::DeviceCapabilitiesParams>,
     ) -> Result<String, String> {
         bulk::get_device_capabilities_impl(&self.state, params.0).await
+    }
+
+    // --- COV tools ---
+
+    #[tool(description = "Subscribe to COV updates; dry-run audits without subscribing.")]
+    async fn subscribe_cov(
+        &self,
+        params: Parameters<cov::SubscribeCovParams>,
+    ) -> Result<String, String> {
+        cov::subscribe_cov_impl(&self.state, params.0).await
+    }
+
+    #[tool(description = "Cancel a COV subscription by object and process id.")]
+    async fn unsubscribe_cov(
+        &self,
+        params: Parameters<cov::UnsubscribeCovParams>,
+    ) -> Result<String, String> {
+        cov::unsubscribe_cov_impl(&self.state, params.0).await
+    }
+
+    #[tool(description = "Drain queued COV notifications with a bounded result size.")]
+    async fn poll_cov_notifications(
+        &self,
+        params: Parameters<cov::PollCovNotificationsParams>,
+    ) -> Result<String, String> {
+        cov::poll_cov_notifications_impl(&self.state, params.0).await
     }
 
     // --- Alarm + event tools ---

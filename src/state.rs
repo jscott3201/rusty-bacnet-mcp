@@ -15,11 +15,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_objects::database::ObjectDatabase;
+use bacnet_services::cov::COVNotificationRequest;
 use bacnet_transport::bip::BipTransport;
 
 use crate::audit::{AuditLog, build_audit_log};
@@ -131,6 +132,9 @@ pub struct GatewayState {
     pub audit: Arc<AuditLog>,
     /// BACnet client for remote device operations (None in test-only mode).
     client: Option<Arc<BACnetClient<BipTransport>>>,
+    /// Receiver for inbound COV notifications. Created at stack startup so
+    /// notification polling sees events that arrived before the poll call.
+    cov_rx: Option<Arc<Mutex<broadcast::Receiver<COVNotificationRequest>>>>,
 }
 
 impl GatewayState {
@@ -150,6 +154,7 @@ impl GatewayState {
             flags,
             audit,
             client: None,
+            cov_rx: None,
         }
     }
 
@@ -163,12 +168,14 @@ impl GatewayState {
     ) -> Result<Self, String> {
         let flags = Arc::new(RuntimeFlags::from_config(&config)?);
         let audit = build_audit_log(config.mcp.audit.as_ref());
+        let cov_rx = client.cov_notifications();
         Ok(Self {
             db,
             config,
             flags,
             audit,
             client: Some(Arc::new(client)),
+            cov_rx: Some(Arc::new(Mutex::new(cov_rx))),
         })
     }
 
@@ -191,6 +198,16 @@ impl GatewayState {
     /// Get the BACnet client, returning an error message if not started.
     pub fn require_client(&self) -> Result<&BACnetClient<BipTransport>, String> {
         self.client()
+            .ok_or_else(|| "BACnet client not started".to_string())
+    }
+
+    /// Get the COV notification receiver, returning an error if the BACnet
+    /// stack is not running.
+    pub fn require_cov_receiver(
+        &self,
+    ) -> Result<Arc<Mutex<broadcast::Receiver<COVNotificationRequest>>>, String> {
+        self.cov_rx
+            .clone()
             .ok_or_else(|| "BACnet client not started".to_string())
     }
 
