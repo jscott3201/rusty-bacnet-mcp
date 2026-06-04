@@ -180,6 +180,8 @@ bounded scalar rendering, and value/error/missing counts. Set
 `response_mode: "detailed"` when the full decoded value is required.
 `list_local_objects` defaults to the first 500 gateway-local objects and reports
 omissions; set `limit` up to 5000 for larger local databases.
+`discover_devices` and `list_known_devices` also default to the first 500 device
+rows and report omissions; set `limit` up to 5000 for larger device tables.
 
 **Resources**:
 

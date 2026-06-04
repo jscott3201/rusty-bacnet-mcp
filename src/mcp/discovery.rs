@@ -3,11 +3,15 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::parse::{decode_raw_property_to_json, property_name};
 use crate::state::GatewayState;
+
+pub(crate) const DEFAULT_DEVICE_LIST_LIMIT: usize = 500;
+const MAX_DEVICE_LIST_LIMIT: usize = 5000;
 
 /// Parameters for discover_devices tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -28,6 +32,17 @@ pub struct DiscoverParams {
         description = "Target address for directed WhoIs: B/IP ip:port or BACnet/SC VMAC. Omit for global WhoIs."
     )]
     pub target: Option<String>,
+    /// Maximum device rows to return in the text response.
+    #[schemars(description = "Max devices to return (default 500, hard cap 5000)")]
+    pub limit: Option<u32>,
+}
+
+/// Parameters for list_known_devices tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListKnownDevicesParams {
+    /// Maximum device rows to return in the text response.
+    #[schemars(description = "Max devices to return (default 500, hard cap 5000)")]
+    pub limit: Option<u32>,
 }
 
 /// Parameters for get_device_info tool.
@@ -69,6 +84,7 @@ pub async fn discover_devices_impl(
     state: &GatewayState,
     params: DiscoverParams,
 ) -> Result<String, String> {
+    let limit = device_list_limit(params.limit)?;
     let client = match state.require_client() {
         Ok(c) => c,
         Err(msg) => return Err(msg),
@@ -107,24 +123,18 @@ pub async fn discover_devices_impl(
         return Ok("No devices discovered.".to_string());
     }
 
-    let mut result = format!("Discovered {} device(s):\n", devices.len());
-    for dev in &devices {
-        result.push_str(&format!(
-            "  - Instance {}, vendor ID {}, max APDU {}, MAC {:02x?}",
-            dev.object_identifier.instance_number(),
-            dev.vendor_id,
-            dev.max_apdu_length,
-            dev.mac_address.as_slice(),
-        ));
-        if let Some(net) = dev.source_network {
-            result.push_str(&format!(", network {net}"));
-        }
-        result.push('\n');
-    }
-    Ok(result)
+    Ok(format_device_list(
+        devices,
+        limit,
+        DeviceListFormat::Discovered,
+    ))
 }
 
-pub async fn list_known_devices_impl(state: &GatewayState) -> Result<String, String> {
+pub async fn list_known_devices_impl(
+    state: &GatewayState,
+    params: ListKnownDevicesParams,
+) -> Result<String, String> {
+    let limit = device_list_limit(params.limit)?;
     let client = match state.require_client() {
         Ok(c) => c,
         Err(msg) => return Err(msg),
@@ -135,20 +145,103 @@ pub async fn list_known_devices_impl(state: &GatewayState) -> Result<String, Str
         return Ok("No devices in the device table. Use discover_devices first.".to_string());
     }
 
-    let mut result = format!("{} known device(s):\n", devices.len());
-    for dev in &devices {
-        result.push_str(&format!(
-            "  - Instance {}, vendor ID {}, MAC {:02x?}",
-            dev.object_identifier.instance_number(),
-            dev.vendor_id,
-            dev.mac_address.as_slice(),
-        ));
-        if let Some(net) = dev.source_network {
-            result.push_str(&format!(", network {net}"));
-        }
-        result.push('\n');
+    Ok(format_device_list(devices, limit, DeviceListFormat::Known))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DeviceListFormat {
+    Discovered,
+    Known,
+    StateResource,
+}
+
+pub(crate) fn format_device_list(
+    mut devices: Vec<DiscoveredDevice>,
+    limit: usize,
+    format: DeviceListFormat,
+) -> String {
+    devices.sort_by_key(|dev| dev.object_identifier.instance_number());
+    let shown = devices.len().min(limit);
+    let omitted = devices.len().saturating_sub(shown);
+    let mut out = format.header(devices.len(), shown, omitted);
+    for dev in devices.iter().take(shown) {
+        out.push_str(&format.line(dev));
     }
-    Ok(result)
+    if omitted > 0 {
+        out.push_str(&format.omission_line(omitted));
+    }
+    out
+}
+
+pub(crate) fn device_list_limit(raw: Option<u32>) -> Result<usize, String> {
+    let limit = raw.unwrap_or(DEFAULT_DEVICE_LIST_LIMIT as u32);
+    if limit == 0 || limit > MAX_DEVICE_LIST_LIMIT as u32 {
+        return Err(format!(
+            "limit {limit} out of range; must be 1..={MAX_DEVICE_LIST_LIMIT}"
+        ));
+    }
+    Ok(limit as usize)
+}
+
+impl DeviceListFormat {
+    fn header(self, total: usize, shown: usize, omitted: usize) -> String {
+        let suffix = if omitted > 0 {
+            format!(" (showing first {shown})")
+        } else {
+            String::new()
+        };
+        match self {
+            Self::Discovered => format!("Discovered {total} device(s){suffix}:\n"),
+            Self::Known => format!("{total} known device(s){suffix}:\n"),
+            Self::StateResource => format!("{total} discovered device(s){suffix}:\n"),
+        }
+    }
+
+    fn line(self, dev: &DiscoveredDevice) -> String {
+        let mut line = match self {
+            Self::Discovered => format!(
+                "  - Instance {}, vendor ID {}, max APDU {}, MAC {:02x?}",
+                dev.object_identifier.instance_number(),
+                dev.vendor_id,
+                dev.max_apdu_length,
+                dev.mac_address.as_slice(),
+            ),
+            Self::Known => format!(
+                "  - Instance {}, vendor ID {}, MAC {:02x?}",
+                dev.object_identifier.instance_number(),
+                dev.vendor_id,
+                dev.mac_address.as_slice(),
+            ),
+            Self::StateResource => format!(
+                "  Instance {}, vendor {}, MAC {:02x?}",
+                dev.object_identifier.instance_number(),
+                dev.vendor_id,
+                dev.mac_address.as_slice(),
+            ),
+        };
+        if matches!(self, Self::Discovered | Self::Known)
+            && let Some(net) = dev.source_network
+        {
+            line.push_str(&format!(", network {net}"));
+        }
+        line.push('\n');
+        line
+    }
+
+    fn omission_line(self, omitted: usize) -> String {
+        match self {
+            Self::Discovered | Self::Known => {
+                format!(
+                    "  ... omitted {omitted} device(s); set limit up to {MAX_DEVICE_LIST_LIMIT} to show more.\n"
+                )
+            }
+            Self::StateResource => {
+                format!(
+                    "  ... omitted {omitted} device(s); use list_known_devices with limit up to {MAX_DEVICE_LIST_LIMIT} for more.\n"
+                )
+            }
+        }
+    }
 }
 
 pub async fn get_device_info_impl(
@@ -201,4 +294,87 @@ pub async fn get_device_info_impl(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    use bacnet_types::MacAddr;
+    use bacnet_types::enums::Segmentation;
+
+    #[test]
+    fn discover_params_default_limit_is_none() {
+        let params: DiscoverParams = serde_json::from_value(serde_json::json!({
+            "low_instance": null,
+            "high_instance": null,
+            "timeout_seconds": 1,
+            "target": null
+        }))
+        .unwrap();
+        assert_eq!(params.limit, None);
+    }
+
+    #[test]
+    fn list_known_devices_params_default_limit_is_none() {
+        let params: ListKnownDevicesParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(params.limit, None);
+    }
+
+    #[test]
+    fn device_list_limit_rejects_invalid_values() {
+        assert!(
+            device_list_limit(Some(0))
+                .unwrap_err()
+                .contains("out of range")
+        );
+        assert!(
+            device_list_limit(Some(MAX_DEVICE_LIST_LIMIT as u32 + 1))
+                .unwrap_err()
+                .contains("out of range")
+        );
+    }
+
+    #[test]
+    fn format_known_devices_sorts_limits_and_reports_omissions() {
+        let out = format_device_list(
+            vec![device(10), device(8), device(9)],
+            2,
+            DeviceListFormat::Known,
+        );
+
+        assert!(out.contains("3 known device(s) (showing first 2)"));
+        assert!(out.contains("Instance 8"));
+        assert!(out.contains("Instance 9"));
+        assert!(!out.contains("Instance 10"));
+        assert!(out.contains("omitted 1 device(s)"));
+    }
+
+    #[test]
+    fn format_state_resource_points_to_list_known_devices_for_more_rows() {
+        let out = format_device_list(
+            vec![device(1), device(2)],
+            1,
+            DeviceListFormat::StateResource,
+        );
+
+        assert!(out.contains("2 discovered device(s) (showing first 1)"));
+        assert!(out.contains("use list_known_devices with limit up to"));
+    }
+
+    fn device(instance: u32) -> DiscoveredDevice {
+        let last_octet = instance as u8;
+        DiscoveredDevice {
+            object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),
+            mac_address: MacAddr::from_slice(&[192, 168, 1, last_octet, 0xba, 0xc0]),
+            max_apdu_length: 1476,
+            segmentation_supported: Segmentation::NONE,
+            max_segments_accepted: None,
+            vendor_id: 999,
+            last_seen: Instant::now(),
+            source_network: Some(1),
+            source_address: None,
+        }
+    }
 }

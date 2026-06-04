@@ -61,7 +61,7 @@ impl GatewayMcp {
         discovery::register_device_impl(&self.state, params.0).await
     }
 
-    #[tool(description = "Broadcast WhoIs and register devices that answer with IAm.")]
+    #[tool(description = "Broadcast WhoIs and return bounded IAm device results.")]
     async fn discover_devices(
         &self,
         params: Parameters<discovery::DiscoverParams>,
@@ -69,9 +69,12 @@ impl GatewayMcp {
         discovery::discover_devices_impl(&self.state, params.0).await
     }
 
-    #[tool(description = "List cached discovered devices without network traffic.")]
-    async fn list_known_devices(&self) -> Result<String, String> {
-        discovery::list_known_devices_impl(&self.state).await
+    #[tool(description = "List bounded cached devices without network traffic.")]
+    async fn list_known_devices(
+        &self,
+        params: Parameters<discovery::ListKnownDevicesParams>,
+    ) -> Result<String, String> {
+        discovery::list_known_devices_impl(&self.state, params.0).await
     }
 
     #[tool(description = "Read common Device object identity properties for one device.")]
@@ -357,16 +360,11 @@ impl GatewayMcp {
                         if devices.is_empty() {
                             "No discovered devices.".to_string()
                         } else {
-                            let mut result = format!("{} discovered device(s):\n", devices.len());
-                            for dev in &devices {
-                                result.push_str(&format!(
-                                    "  Instance {}, vendor {}, MAC {:02x?}\n",
-                                    dev.object_identifier.instance_number(),
-                                    dev.vendor_id,
-                                    dev.mac_address.as_slice(),
-                                ));
-                            }
-                            result
+                            discovery::format_device_list(
+                                devices,
+                                discovery::DEFAULT_DEVICE_LIST_LIMIT,
+                                discovery::DeviceListFormat::StateResource,
+                            )
                         }
                     }
                     Err(_) => "No devices (client not started).".to_string(),

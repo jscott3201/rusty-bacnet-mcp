@@ -116,9 +116,9 @@ Token-efficient usage:
 
 Tool families:
   discovery:
-    discover_devices broadcasts WhoIs and fills the device table.
+    discover_devices broadcasts WhoIs and returns bounded IAm rows.
     register_device adds a known device without broadcast: B/IP uses IP:port, BACnet/SC uses VMAC.
-    list_known_devices reads the cached table without wire traffic.
+    list_known_devices reads a bounded cached table without wire traffic.
     get_device_info reads common Device object identity fields.
 
   remote reads:

@@ -112,9 +112,12 @@ async fn sc_register_device_accepts_vmac_and_rejects_bip_socket_address() {
     .unwrap();
     assert!(result.contains("Registered device 389099"));
 
-    let devices = discovery::list_known_devices_impl(&built.state)
-        .await
-        .unwrap();
+    let devices = discovery::list_known_devices_impl(
+        &built.state,
+        discovery::ListKnownDevicesParams { limit: None },
+    )
+    .await
+    .unwrap();
     assert!(devices.contains("Instance 389099"), "got: {devices}");
     assert!(devices.contains("02, 00, 00, 00, 00, 42"), "got: {devices}");
 
@@ -136,6 +139,7 @@ async fn sc_register_device_accepts_vmac_and_rejects_bip_socket_address() {
             high_instance: None,
             timeout_seconds: Some(0),
             target: Some("127.0.0.1:47808".into()),
+            limit: None,
         },
     )
     .await
