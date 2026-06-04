@@ -2,10 +2,9 @@ use bacnet_services::rpm::{ReadPropertyMultipleACK, ReadResultElement};
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 
+use crate::mcp::value_format::compact_json_value;
 use crate::parse::{decode_raw_property_to_json_with_context, object_type_name, property_name};
 
-const MAX_COMPACT_VALUE_CHARS: usize = 160;
-const MAX_LIST_PREVIEW_ITEMS: usize = 4;
 const MAX_COMPACT_RPM_FIELDS_PER_OBJECT: usize = 64;
 const MAX_COMPACT_RPM_TOTAL_FIELDS: usize = 512;
 
@@ -134,66 +133,6 @@ fn compact_result_value(elem: &ReadResultElement) -> String {
     };
     let decoded = decode_raw_property_to_json_with_context(bytes, elem.property_identifier);
     compact_json_value(&decoded)
-}
-
-fn compact_json_value(decoded: &serde_json::Value) -> String {
-    if decoded.is_null() {
-        return "null".into();
-    }
-    if let Some(name) = decoded.get("name").and_then(|v| v.as_str()) {
-        return truncate_text(name);
-    }
-    let ty = decoded.get("type").and_then(|v| v.as_str());
-    if let Some(value) = decoded.get("value") {
-        return compact_json_inner(value, ty);
-    }
-    compact_json_inner(decoded, None)
-}
-
-fn compact_json_inner(value: &serde_json::Value, value_type: Option<&str>) -> String {
-    match value {
-        serde_json::Value::Null => "null".into(),
-        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => value.to_string(),
-        serde_json::Value::String(s) => compact_string_value(s, value_type),
-        serde_json::Value::Array(items) => compact_json_array(items),
-        serde_json::Value::Object(_) => truncate_text(&value.to_string()),
-    }
-}
-
-fn compact_string_value(value: &str, value_type: Option<&str>) -> String {
-    match value_type {
-        Some("string") | None => quote_json_string(&truncate_text(value)),
-        _ => truncate_text(value),
-    }
-}
-
-fn compact_json_array(items: &[serde_json::Value]) -> String {
-    if items.is_empty() {
-        return "list[0]".into();
-    }
-    let mut preview: Vec<String> = items
-        .iter()
-        .take(MAX_LIST_PREVIEW_ITEMS)
-        .map(compact_json_value)
-        .collect();
-    if items.len() > MAX_LIST_PREVIEW_ITEMS {
-        preview.push(format!("+{} more", items.len() - MAX_LIST_PREVIEW_ITEMS));
-    }
-    format!("list[{}]({})", items.len(), preview.join(","))
-}
-
-fn quote_json_string(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"<invalid>\"".into())
-}
-
-fn truncate_text(raw: &str) -> String {
-    if raw.chars().count() <= MAX_COMPACT_VALUE_CHARS {
-        return raw.to_string();
-    }
-    let keep = MAX_COMPACT_VALUE_CHARS.saturating_sub(3);
-    let mut out: String = raw.chars().take(keep).collect();
-    out.push_str("...");
-    out
 }
 
 fn format_instance_ranges(instances: &[u32]) -> String {

@@ -176,6 +176,8 @@ transport address format: `ip:port` for B/IP, or a 6-byte VMAC such as
 `read_property_multiple` defaults to compact output with one line per object,
 bounded scalar rendering, and value/error/missing counts. Set
 `response_mode: "detailed"` only when full decoded property lines are needed.
+`read_property` also defaults to compact output for large arrays/strings; set
+`response_mode: "detailed"` when the full decoded value is required.
 
 **Resources**:
 

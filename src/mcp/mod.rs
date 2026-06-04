@@ -16,6 +16,7 @@ pub mod schedule_write;
 pub mod schedules;
 pub mod topology;
 pub mod trend;
+pub(crate) mod value_format;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -83,7 +84,7 @@ impl GatewayMcp {
 
     // --- Property tools ---
 
-    #[tool(description = "Read one property from one object on a discovered remote device.")]
+    #[tool(description = "Read one compact property value from a discovered remote device.")]
     async fn read_property(
         &self,
         params: Parameters<properties::ReadPropertyParams>,
