@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use bacnet_objects::database::ObjectDatabase;
+use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::audit::AuditEntry;
@@ -13,8 +15,21 @@ use crate::parse::{
 use crate::safety::PolicyDecision;
 use crate::state::GatewayState;
 
-const DEFAULT_LIST_LOCAL_OBJECTS_LIMIT: usize = 500;
+pub(crate) const DEFAULT_LIST_LOCAL_OBJECTS_LIMIT: usize = 500;
 const MAX_LIST_LOCAL_OBJECTS_LIMIT: usize = 5000;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LocalObjectRow {
+    object_type: ObjectType,
+    instance: u32,
+    name: String,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum LocalObjectListFormat {
+    Tool,
+    StateResource,
+}
 
 /// Parameters for list_local_objects tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -81,15 +96,7 @@ pub async fn list_local_objects_impl(
     };
 
     let db = state.db.read().await;
-    let mut objects: Vec<_> = db
-        .iter_objects()
-        .filter(|(oid, _)| {
-            filter_type
-                .map(|ft| oid.object_type() == ft)
-                .unwrap_or(true)
-        })
-        .collect();
-    objects.sort_by_key(|(oid, _)| (oid.object_type().to_raw(), oid.instance_number()));
+    let objects = collect_local_object_rows(&db, filter_type);
 
     if objects.is_empty() {
         return Ok(match &params.object_type {
@@ -98,6 +105,39 @@ pub async fn list_local_objects_impl(
         });
     }
 
+    Ok(format_local_object_rows(
+        &objects,
+        limit,
+        LocalObjectListFormat::Tool,
+    ))
+}
+
+pub(crate) fn collect_local_object_rows(
+    db: &ObjectDatabase,
+    filter_type: Option<ObjectType>,
+) -> Vec<LocalObjectRow> {
+    let mut rows: Vec<_> = db
+        .iter_objects()
+        .filter(|(oid, _)| {
+            filter_type
+                .map(|ft| oid.object_type() == ft)
+                .unwrap_or(true)
+        })
+        .map(|(oid, obj)| LocalObjectRow {
+            object_type: oid.object_type(),
+            instance: oid.instance_number(),
+            name: obj.object_name().to_string(),
+        })
+        .collect();
+    rows.sort_by_key(|row| (row.object_type.to_raw(), row.instance));
+    rows
+}
+
+pub(crate) fn format_local_object_rows(
+    objects: &[LocalObjectRow],
+    limit: usize,
+    format: LocalObjectListFormat,
+) -> String {
     let shown = objects.len().min(limit);
     let omitted = objects.len().saturating_sub(shown);
     let mut result = if omitted > 0 {
@@ -108,20 +148,33 @@ pub async fn list_local_objects_impl(
     } else {
         format!("{} local object(s):\n", objects.len())
     };
-    for (oid, obj) in objects.iter().take(shown) {
+    for row in objects.iter().take(shown) {
+        let bullet = match format {
+            LocalObjectListFormat::Tool => "  - ",
+            LocalObjectListFormat::StateResource => "  ",
+        };
         result.push_str(&format!(
-            "  - {}:{} \"{}\"\n",
-            object_type_name(oid.object_type()),
-            oid.instance_number(),
-            obj.object_name(),
+            "{bullet}{}:{} \"{}\"\n",
+            object_type_name(row.object_type),
+            row.instance,
+            row.name,
         ));
     }
     if omitted > 0 {
-        result.push_str(&format!(
-            "  ... omitted {omitted} object(s); set limit up to {MAX_LIST_LOCAL_OBJECTS_LIMIT} to show more.\n"
-        ));
+        match format {
+            LocalObjectListFormat::Tool => {
+                result.push_str(&format!(
+                    "  ... omitted {omitted} object(s); set limit up to {MAX_LIST_LOCAL_OBJECTS_LIMIT} to show more.\n"
+                ));
+            }
+            LocalObjectListFormat::StateResource => {
+                result.push_str(&format!(
+                    "  ... omitted {omitted} object(s); use list_local_objects with limit up to {MAX_LIST_LOCAL_OBJECTS_LIMIT} for more.\n"
+                ));
+            }
+        }
     }
-    Ok(result)
+    result
 }
 
 fn list_local_objects_limit(raw: Option<u32>) -> Result<usize, String> {
@@ -187,7 +240,6 @@ pub async fn read_local_property_impl(
 mod tests {
     use super::*;
     use crate::config::{DeviceConfig, GatewayConfig, McpConfig, TransportsConfig};
-    use bacnet_objects::database::ObjectDatabase;
     use bacnet_objects::device::{DeviceConfig as BacnetDeviceConfig, DeviceObject};
 
     #[test]
@@ -245,6 +297,62 @@ mod tests {
         assert!(out.contains("analog-value:2"));
         assert!(!out.contains("analog-value:3"));
         assert!(out.contains("omitted 2 object(s)"));
+    }
+
+    #[tokio::test]
+    async fn local_object_rows_sort_by_type_and_instance() {
+        let state = test_state();
+        create_local_object_impl(
+            &state,
+            CreateLocalObjectParams {
+                object_type: "binary-value".into(),
+                object_instance: 2,
+                object_name: "BV 2".into(),
+                number_of_states: None,
+            },
+        )
+        .await
+        .unwrap();
+        create_local_object_impl(
+            &state,
+            CreateLocalObjectParams {
+                object_type: "analog-value".into(),
+                object_instance: 1,
+                object_name: "AV 1".into(),
+                number_of_states: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let db = state.db.read().await;
+        let rows = collect_local_object_rows(&db, None);
+        let rendered = format_local_object_rows(&rows, 3, LocalObjectListFormat::StateResource);
+
+        let analog_pos = rendered.find("analog-value:1").unwrap();
+        let binary_pos = rendered.find("binary-value:2").unwrap();
+        assert!(analog_pos < binary_pos, "got: {rendered}");
+    }
+
+    #[test]
+    fn state_resource_format_points_to_list_tool_for_more_rows() {
+        let rows = vec![
+            LocalObjectRow {
+                object_type: ObjectType::ANALOG_VALUE,
+                instance: 1,
+                name: "AV 1".into(),
+            },
+            LocalObjectRow {
+                object_type: ObjectType::ANALOG_VALUE,
+                instance: 2,
+                name: "AV 2".into(),
+            },
+        ];
+
+        let out = format_local_object_rows(&rows, 1, LocalObjectListFormat::StateResource);
+
+        assert!(out.contains("2 local object(s) (showing first 1)"));
+        assert!(out.contains("use list_local_objects with limit up to"));
     }
 
     fn test_state() -> GatewayState {

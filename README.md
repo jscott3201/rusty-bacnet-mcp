@@ -187,7 +187,7 @@ rows and report omissions; set `limit` up to 5000 for larger device tables.
 
 - `bacnet://reference/{object-types,properties,units,errors,reliability,priority-array,networking,services,troubleshooting}` — compiled-in reference text.
 - `bacnet://reference/object-types/{type}` — per-type drill-down.
-- `bacnet://state/{devices,local-objects,config}` — live state snapshots.
+- `bacnet://state/{devices,local-objects,config}` — bounded live state snapshots.
 
 ## Configuration (JSON)
 
