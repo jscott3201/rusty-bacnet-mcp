@@ -231,3 +231,17 @@ fn validate_unknown_route_transport_rejected() {
     let err = config.validate().unwrap_err();
     assert!(err.message.contains("mstp") || err.message.contains("unknown"));
 }
+
+#[test]
+fn validate_route_transport_must_be_active_transport() {
+    let json = r#"{
+        "device": { "instance": 1, "name": "Test" },
+        "transports": {
+            "bip": { "broadcast": "192.168.1.255", "network_number": 1 }
+        },
+        "routes": [ { "network": 5, "via_transport": "sc" } ]
+    }"#;
+    let config = GatewayConfig::from_json(json).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(err.message.contains("not configured"));
+}

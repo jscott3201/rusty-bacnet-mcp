@@ -503,7 +503,16 @@ impl GatewayConfig {
         // Routes can only target known transports.
         for route in &self.routes {
             match route.via_transport.as_str() {
-                "bip" | "sc" => {}
+                "bip" if has_bip => {}
+                "sc" if has_sc => {}
+                "bip" | "sc" => {
+                    return Err(ConfigError {
+                        message: format!(
+                            "route via_transport '{}' is not configured as the active transport",
+                            route.via_transport
+                        ),
+                    });
+                }
                 other => {
                     return Err(ConfigError {
                         message: format!(
