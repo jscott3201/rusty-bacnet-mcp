@@ -12,7 +12,7 @@ use ratatui::widgets::{
     TableState, Wrap,
 };
 
-use crate::config::GatewayConfig;
+use crate::config::{GatewayConfig, describe_sc_runtime};
 use crate::state::GatewayState;
 use crate::tui::logger::LogBuffer;
 use crate::tui::theme;
@@ -273,8 +273,8 @@ fn render_status(
             Span::raw("  SC  "),
             badge,
             Span::raw(format!(
-                "  node {} net {}",
-                sc.hub_uri.as_deref().unwrap_or("<missing hub>"),
+                "  {} net {}",
+                describe_sc_runtime(sc),
                 sc.network_number
             )),
         ]));

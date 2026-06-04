@@ -15,6 +15,10 @@ fn starter_examples_parse_and_validate() {
             "bacnet-mcp.sc.json",
             include_str!("../examples/bacnet-mcp.sc.json"),
         ),
+        (
+            "bacnet-mcp.sc-embedded.json",
+            include_str!("../examples/bacnet-mcp.sc-embedded.json"),
+        ),
     ] {
         let config = GatewayConfig::from_json(raw)
             .unwrap_or_else(|err| panic!("{name} should parse as GatewayConfig: {err}"));

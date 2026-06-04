@@ -1,0 +1,25 @@
+{
+  "mcp": {
+    "read_only": true,
+    "http": { "bind": "127.0.0.1:3000" }
+  },
+  "device": {
+    "instance": 389001,
+    "name": "BACnet MCP SC Embedded Hub",
+    "vendor_id": 999,
+    "description": "Agentic MCP gateway with embedded BACnet/SC hub"
+  },
+  "transports": {
+    "sc": {
+      "listen": "127.0.0.1:8443",
+      "hub_uri": "wss://127.0.0.1:8443",
+      "cert": "certs/node.pem",
+      "key": "certs/node.key",
+      "ca": "certs/ca.pem",
+      "hub_vmac": "02:00:00:00:00:ff",
+      "client_vmac": "02:00:00:00:00:01",
+      "server_vmac": "02:00:00:00:00:02",
+      "network_number": 2
+    }
+  }
+}

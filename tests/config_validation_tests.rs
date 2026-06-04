@@ -154,14 +154,33 @@ fn validate_sc_requires_hub_uri() {
 }
 
 #[test]
-fn validate_sc_embedded_hub_mode_rejected() {
+fn validate_sc_embedded_hub_mode_accepted() {
     let json = r#"{
         "device": { "instance": 1, "name": "Test" },
         "transports": {
             "sc": {
-                "hub_uri": "wss://hub.example.com",
-                "listen": "0.0.0.0:8443",
+                "listen": "127.0.0.1:8443",
+                "cert": "c.pem", "key": "k.pem", "ca": "ca.pem",
+                "hub_vmac": "02:00:00:00:00:ff",
+                "client_vmac": "02:00:00:00:00:01",
+                "server_vmac": "02:00:00:00:00:02",
+                "network_number": 2
+            }
+        }
+    }"#;
+    let config = GatewayConfig::from_json(json).unwrap();
+    config.validate().unwrap();
+}
+
+#[test]
+fn validate_sc_embedded_hub_requires_ca_for_mtls() {
+    let json = r#"{
+        "device": { "instance": 1, "name": "Test" },
+        "transports": {
+            "sc": {
+                "listen": "127.0.0.1:8443",
                 "cert": "c.pem", "key": "k.pem",
+                "hub_vmac": "02:00:00:00:00:ff",
                 "client_vmac": "02:00:00:00:00:01",
                 "server_vmac": "02:00:00:00:00:02",
                 "network_number": 2
@@ -170,7 +189,66 @@ fn validate_sc_embedded_hub_mode_rejected() {
     }"#;
     let config = GatewayConfig::from_json(json).unwrap();
     let err = config.validate().unwrap_err();
-    assert!(err.message.contains("listen") && err.message.contains("hub_uri"));
+    assert!(err.message.contains("ca") && err.message.contains("mTLS"));
+}
+
+#[test]
+fn validate_sc_embedded_hub_requires_hub_vmac() {
+    let json = r#"{
+        "device": { "instance": 1, "name": "Test" },
+        "transports": {
+            "sc": {
+                "listen": "127.0.0.1:8443",
+                "cert": "c.pem", "key": "k.pem", "ca": "ca.pem",
+                "client_vmac": "02:00:00:00:00:01",
+                "server_vmac": "02:00:00:00:00:02",
+                "network_number": 2
+            }
+        }
+    }"#;
+    let config = GatewayConfig::from_json(json).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(err.message.contains("hub_vmac"));
+}
+
+#[test]
+fn validate_sc_embedded_hub_rejects_duplicate_hub_vmac() {
+    let json = r#"{
+        "device": { "instance": 1, "name": "Test" },
+        "transports": {
+            "sc": {
+                "listen": "127.0.0.1:8443",
+                "cert": "c.pem", "key": "k.pem", "ca": "ca.pem",
+                "hub_vmac": "02:00:00:00:00:01",
+                "client_vmac": "02:00:00:00:00:01",
+                "server_vmac": "02:00:00:00:00:02",
+                "network_number": 2
+            }
+        }
+    }"#;
+    let config = GatewayConfig::from_json(json).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(err.message.contains("hub_vmac") && err.message.contains("differ"));
+}
+
+#[test]
+fn validate_sc_embedded_hub_wildcard_listen_requires_hub_uri() {
+    let json = r#"{
+        "device": { "instance": 1, "name": "Test" },
+        "transports": {
+            "sc": {
+                "listen": "0.0.0.0:8443",
+                "cert": "c.pem", "key": "k.pem", "ca": "ca.pem",
+                "hub_vmac": "02:00:00:00:00:ff",
+                "client_vmac": "02:00:00:00:00:01",
+                "server_vmac": "02:00:00:00:00:02",
+                "network_number": 2
+            }
+        }
+    }"#;
+    let config = GatewayConfig::from_json(json).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(err.message.contains("hub_uri") && err.message.contains("wildcard"));
 }
 
 #[test]

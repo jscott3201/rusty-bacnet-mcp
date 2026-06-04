@@ -22,7 +22,7 @@ Version 0.2.0 dropped the legacy HTTP REST API and MS/TP transport to focus the 
 Coming next:
 - Phase 2 — feature expansion (RPM, priority array, trends, alarms, schedules, layered safety)
 - Phase 3 — `bacnet-mcp-tui` operator console (ratatui)
-- Phase 4 — embedded BACnet/SC hub/router composition
+- Phase 4 — route-aware multi-transport composition
 
 ## Install
 
@@ -62,9 +62,9 @@ compiles with `bin,sc`. The Alpine target runs as `bacnet`; the distroless
 target runs as non-root UID/GID `65532:65532`.
 
 Both runtime targets include a CA bundle for TLS, expose MCP HTTP on
-`3000/tcp`, BACnet/IP on `47808/udp`, and reserve `8443/tcp` for future
-embedded BACnet/SC hub work. The default container config is B/IP-only,
-read-only, and binds MCP HTTP to `0.0.0.0:3000`.
+`3000/tcp`, BACnet/IP on `47808/udp`, and BACnet/SC embedded hub traffic on
+`8443/tcp`. The default container config is B/IP-only, read-only, and binds MCP
+HTTP to `0.0.0.0:3000`.
 
 For BACnet/IP broadcast discovery, host networking is usually the least
 surprising container mode:
@@ -206,9 +206,9 @@ transport address format: `ip:port` for B/IP, or a 6-byte VMAC such as
 
 Full schema: see [src/config.rs](src/config.rs). Starter file: [examples/bacnet-mcp.json](examples/bacnet-mcp.json).
 
-Configure exactly one BACnet runtime transport. For BACnet/SC node mode, build
-with `--features bin,sc` and provide a hub URI, client certificate material,
-and distinct stable VMACs:
+Configure exactly one BACnet runtime transport. For BACnet/SC, build with
+`--features bin,sc`. External-hub node mode needs a hub URI, client
+certificate material, and distinct stable VMACs:
 
 ```json
 {
@@ -223,6 +223,34 @@ and distinct stable VMACs:
       "cert": "/etc/bacnet-mcp/certs/node.pem",
       "key": "/etc/bacnet-mcp/certs/node.key",
       "ca": "/etc/bacnet-mcp/certs/ca.pem",
+      "client_vmac": "02:00:00:00:00:01",
+      "server_vmac": "02:00:00:00:00:02",
+      "network_number": 2
+    }
+  }
+}
+```
+
+Embedded-hub mode starts a local BACnet/SC hub and connects the gateway's
+client/server nodes through it. Provide `listen`, `hub_vmac`, and `ca` for
+mTLS. If `listen` is a wildcard address, also provide `hub_uri` so local nodes
+know which TLS name/address to use.
+
+```json
+{
+  "device": {
+    "instance": 389001,
+    "name": "BACnet MCP SC Embedded Hub",
+    "vendor_id": 999
+  },
+  "transports": {
+    "sc": {
+      "listen": "127.0.0.1:8443",
+      "hub_uri": "wss://127.0.0.1:8443",
+      "cert": "/etc/bacnet-mcp/certs/node.pem",
+      "key": "/etc/bacnet-mcp/certs/node.key",
+      "ca": "/etc/bacnet-mcp/certs/ca.pem",
+      "hub_vmac": "02:00:00:00:00:ff",
       "client_vmac": "02:00:00:00:00:01",
       "server_vmac": "02:00:00:00:00:02",
       "network_number": 2

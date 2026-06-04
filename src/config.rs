@@ -210,20 +210,23 @@ fn default_bip_port() -> u16 {
 
 /// BACnet/SC transport configuration.
 ///
-/// The MCP gateway runs as a BACnet/SC node: its local client and local server
-/// each connect to an SC hub over TLS WebSocket. `client_vmac` and
-/// `server_vmac` must be distinct stable 6-byte VMACs so the hub can route
-/// requests and notifications unambiguously.
+/// The MCP gateway always runs local client and server SC nodes. They connect
+/// to `hub_uri` when using an external hub. When `listen` is set, the gateway
+/// also starts an embedded SC hub and the local nodes connect to either
+/// `hub_uri` or the concrete bound listen address. `client_vmac`,
+/// `server_vmac`, and embedded `hub_vmac` must be distinct stable 6-byte VMACs
+/// so the hub can route requests and notifications unambiguously.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ScConfig {
     /// WebSocket URI of the remote SC hub (e.g. `wss://hub.example.com:8443`).
     #[serde(default)]
     pub hub_uri: Option<String>,
-    /// Reserved for a future embedded SC hub. Runtime transport support today
-    /// requires `hub_uri`; validation rejects `listen` so configs cannot look
-    /// like they started a local hub when they did not.
+    /// Embedded SC hub listen address (e.g. `127.0.0.1:8443`).
     #[serde(default)]
     pub listen: Option<String>,
+    /// VMAC used by the embedded SC hub when `listen` is set.
+    #[serde(default)]
+    pub hub_vmac: Option<String>,
     /// TLS client/server certificate path (PEM).
     pub cert: String,
     /// TLS private key path (PEM).
@@ -239,6 +242,16 @@ pub struct ScConfig {
     pub server_vmac: String,
     /// Network number for this transport.
     pub network_number: u16,
+}
+
+/// Human-readable BACnet/SC runtime role for status resources and TUI output.
+pub fn describe_sc_runtime(sc: &ScConfig) -> String {
+    match (sc.listen.as_deref(), sc.hub_uri.as_deref()) {
+        (Some(listen), Some(uri)) => format!("Embedded hub {listen}, node {uri}"),
+        (Some(listen), None) => format!("Embedded hub {listen}, node derived from bound address"),
+        (None, Some(uri)) => format!("Node connected to {uri}"),
+        (None, None) => "(unconfigured)".to_string(),
+    }
 }
 
 /// Parse a BACnet/SC VMAC from colon-separated or compact hex.
@@ -388,22 +401,43 @@ impl GatewayConfig {
             _ => {}
         }
 
-        // SC runtime: node mode only today. Embedded hub support needs shared
-        // local database/router wiring before it can be represented honestly.
         if let Some(sc) = &self.transports.sc {
-            if sc.listen.is_some() {
+            let embedded_hub = sc.listen.as_deref();
+            if sc.hub_uri.is_none() && embedded_hub.is_none() {
                 return Err(ConfigError {
                     message:
-                        "transports.sc.listen is not a runtime transport yet; configure hub_uri to connect to an SC hub"
+                        "transports.sc.hub_uri is required unless transports.sc.listen starts an embedded hub"
                             .to_string(),
                 });
             }
-            let hub_uri = sc.hub_uri.as_deref().ok_or_else(|| ConfigError {
-                message: "transports.sc.hub_uri is required for BACnet/SC node mode".to_string(),
-            })?;
-            if !hub_uri.starts_with("wss://") {
+            if let Some(hub_uri) = sc.hub_uri.as_deref()
+                && !hub_uri.starts_with("wss://")
+            {
                 return Err(ConfigError {
                     message: "transports.sc.hub_uri must use wss://".to_string(),
+                });
+            }
+            if let Some(listen) = embedded_hub {
+                let listen_addr: std::net::SocketAddr =
+                    listen.parse().map_err(|e| ConfigError {
+                        message: format!("transports.sc.listen '{listen}' must be ip:port: {e}"),
+                    })?;
+                if listen_addr.ip().is_unspecified() && sc.hub_uri.is_none() {
+                    return Err(ConfigError {
+                        message:
+                            "transports.sc.hub_uri is required when transports.sc.listen uses a wildcard address"
+                                .to_string(),
+                    });
+                }
+                if sc.ca.as_ref().is_none_or(|ca| ca.trim().is_empty()) {
+                    return Err(ConfigError {
+                        message: "transports.sc.ca is required for embedded BACnet/SC hub mTLS"
+                            .to_string(),
+                    });
+                }
+            } else if sc.hub_vmac.is_some() {
+                return Err(ConfigError {
+                    message: "transports.sc.hub_vmac requires transports.sc.listen".to_string(),
                 });
             }
             if sc.cert.trim().is_empty() {
@@ -426,6 +460,22 @@ impl GatewayConfig {
                 return Err(ConfigError {
                     message: "transports.sc.client_vmac and server_vmac must differ".to_string(),
                 });
+            }
+            if embedded_hub.is_some() {
+                let hub_raw = sc.hub_vmac.as_deref().ok_or_else(|| ConfigError {
+                    message: "transports.sc.hub_vmac is required when transports.sc.listen is set"
+                        .to_string(),
+                })?;
+                let hub_vmac = parse_sc_vmac(hub_raw).map_err(|message| ConfigError {
+                    message: format!("transports.sc.hub_vmac: {message}"),
+                })?;
+                if hub_vmac == client_vmac || hub_vmac == server_vmac {
+                    return Err(ConfigError {
+                        message:
+                            "transports.sc.hub_vmac must differ from client_vmac and server_vmac"
+                                .to_string(),
+                    });
+                }
             }
         }
 

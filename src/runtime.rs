@@ -20,6 +20,12 @@ use tokio::sync::{RwLock, broadcast};
 #[cfg(feature = "sc")]
 pub type ScTlsTransport = bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>;
 
+#[cfg(feature = "sc")]
+pub type GatewayScHub = bacnet_transport::sc_hub::ScHub;
+
+#[cfg(not(feature = "sc"))]
+pub struct GatewayScHub;
+
 /// The active BACnet client.
 pub enum GatewayClient {
     /// BACnet/IP over UDP.

@@ -20,7 +20,7 @@ pub type BuildError = Box<dyn std::error::Error>;
 use crate::config::parse_sc_vmac;
 use crate::config::{BipConfig, GatewayConfig, ScConfig};
 use crate::parse::{construct_object, parse_object_type};
-use crate::runtime::{GatewayClient, GatewayServer};
+use crate::runtime::{GatewayClient, GatewayScHub, GatewayServer};
 use crate::state::GatewayState;
 
 /// Builder for constructing a fully wired Gateway.
@@ -38,11 +38,14 @@ impl GatewayBuilder {
     /// and return state.
     pub async fn build(self) -> Result<BuiltGateway, BuildError> {
         let db = build_object_database(&self.config)?;
-        let (server, client) = match (
+        let (server, client, sc_hub) = match (
             self.config.transports.bip.as_ref(),
             self.config.transports.sc.as_ref(),
         ) {
-            (Some(bip), None) => build_bip_stack(&self.config, db, bip).await?,
+            (Some(bip), None) => {
+                let (server, client) = build_bip_stack(&self.config, db, bip).await?;
+                (server, client, None)
+            }
             (None, Some(sc)) => build_sc_stack(&self.config, db, sc).await?,
             (Some(_), Some(_)) => {
                 return Err(
@@ -74,6 +77,7 @@ impl GatewayBuilder {
             state,
             server_mac,
             server,
+            sc_hub,
         })
     }
 }
@@ -193,14 +197,12 @@ async fn build_sc_stack(
     config: &GatewayConfig,
     db: ObjectDatabase,
     sc: &ScConfig,
-) -> Result<(GatewayServer, GatewayClient), BuildError> {
+) -> Result<(GatewayServer, GatewayClient, Option<GatewayScHub>), BuildError> {
     use bacnet_transport::sc::ScTransport;
+    use bacnet_transport::sc_hub::ScHub;
     use bacnet_transport::sc_tls::TlsWebSocket;
+    use tokio_rustls::TlsAcceptor;
 
-    let hub_uri = sc
-        .hub_uri
-        .as_deref()
-        .ok_or_else(|| Error::Encoding("transports.sc.hub_uri is required".into()))?;
     let client_vmac = parse_sc_vmac(&sc.client_vmac)
         .map_err(|e| Error::Encoding(format!("invalid SC client_vmac: {e}")))?;
     let server_vmac = parse_sc_vmac(&sc.server_vmac)
@@ -209,9 +211,29 @@ async fn build_sc_stack(
         return Err(Error::Encoding("SC client_vmac and server_vmac must differ".into()).into());
     }
 
+    let sc_hub = if let Some(listen) = sc.listen.as_deref() {
+        let hub_vmac_raw = sc
+            .hub_vmac
+            .as_deref()
+            .ok_or_else(|| Error::Encoding("transports.sc.hub_vmac is required".into()))?;
+        let hub_vmac = parse_sc_vmac(hub_vmac_raw)
+            .map_err(|e| Error::Encoding(format!("invalid SC hub_vmac: {e}")))?;
+        let acceptor = TlsAcceptor::from(build_sc_hub_tls_config(sc)?);
+        let hub = ScHub::start(listen, acceptor, hub_vmac).await?;
+        if let Some(addr) = hub.local_addr() {
+            tracing::info!("Embedded BACnet/SC hub listening on {addr}");
+        } else {
+            tracing::info!("Embedded BACnet/SC hub listening on {listen}");
+        }
+        Some(hub)
+    } else {
+        None
+    };
+
+    let hub_uri = resolve_sc_hub_uri(sc, sc_hub.as_ref())?;
     let tls_config = build_sc_client_tls_config(sc)?;
 
-    let server_ws = TlsWebSocket::connect(hub_uri, tls_config.clone()).await?;
+    let server_ws = TlsWebSocket::connect(&hub_uri, tls_config.clone()).await?;
     let server_transport = ScTransport::new(server_ws, server_vmac);
     let server = BACnetServer::generic_builder()
         .transport(server_transport)
@@ -220,7 +242,7 @@ async fn build_sc_stack(
         .build()
         .await?;
 
-    let client_ws = TlsWebSocket::connect(hub_uri, tls_config).await?;
+    let client_ws = TlsWebSocket::connect(&hub_uri, tls_config).await?;
     let client_transport = ScTransport::new(client_ws, client_vmac);
     let client = BACnetClient::generic_builder()
         .transport(client_transport)
@@ -228,7 +250,7 @@ async fn build_sc_stack(
         .build()
         .await?;
 
-    Ok((GatewayServer::Sc(server), GatewayClient::Sc(client)))
+    Ok((GatewayServer::Sc(server), GatewayClient::Sc(client), sc_hub))
 }
 
 #[cfg(not(feature = "sc"))]
@@ -236,8 +258,33 @@ async fn build_sc_stack(
     _config: &GatewayConfig,
     _db: ObjectDatabase,
     _sc: &ScConfig,
-) -> Result<(GatewayServer, GatewayClient), BuildError> {
+) -> Result<(GatewayServer, GatewayClient, Option<GatewayScHub>), BuildError> {
     Err("BACnet/SC runtime requires building with --features sc".into())
+}
+
+#[cfg(feature = "sc")]
+fn resolve_sc_hub_uri(sc: &ScConfig, sc_hub: Option<&GatewayScHub>) -> Result<String, BuildError> {
+    if let Some(uri) = sc.hub_uri.as_deref() {
+        return Ok(uri.to_string());
+    }
+    let hub = sc_hub.ok_or_else(|| {
+        Error::Encoding("transports.sc.hub_uri is required for BACnet/SC node mode".into())
+    })?;
+    let addr = hub
+        .local_addr()
+        .ok_or_else(|| Error::Encoding("embedded SC hub local address unavailable".into()))?;
+    if addr.ip().is_unspecified() {
+        return Err(Error::Encoding(
+            "transports.sc.hub_uri is required when embedded SC hub listens on a wildcard address"
+                .into(),
+        )
+        .into());
+    }
+    let host = match addr.ip() {
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    Ok(format!("wss://{host}:{}", addr.port()))
 }
 
 #[cfg(feature = "sc")]
@@ -290,6 +337,53 @@ fn build_sc_client_tls_config(
     Ok(Arc::new(tls))
 }
 
+#[cfg(feature = "sc")]
+fn build_sc_hub_tls_config(
+    sc: &ScConfig,
+) -> Result<Arc<tokio_rustls::rustls::ServerConfig>, BuildError> {
+    use tokio_rustls::rustls;
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let cert_data = std::fs::read(&sc.cert)
+        .map_err(|e| format!("failed to read SC hub cert '{}': {e}", sc.cert))?;
+    let key_data = std::fs::read(&sc.key)
+        .map_err(|e| format!("failed to read SC hub key '{}': {e}", sc.key))?;
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_data)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to parse SC hub cert '{}': {e}", sc.cert))?;
+    let key = PrivateKeyDer::from_pem_slice(&key_data)
+        .map_err(|e| format!("failed to parse SC hub key '{}': {e}", sc.key))?;
+
+    let ca_path = sc
+        .ca
+        .as_deref()
+        .ok_or_else(|| Error::Encoding("transports.sc.ca is required for embedded hub".into()))?;
+    let ca_data = std::fs::read(ca_path)
+        .map_err(|e| format!("failed to read SC hub client CA bundle '{ca_path}': {e}"))?;
+    let ca_certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&ca_data)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to parse SC hub client CA bundle '{ca_path}': {e}"))?;
+    let mut client_auth_roots = rustls::RootCertStore::empty();
+    for cert in ca_certs {
+        client_auth_roots
+            .add(cert)
+            .map_err(|e| format!("failed to add SC hub client CA '{ca_path}': {e}"))?;
+    }
+
+    let client_verifier =
+        rustls::server::WebPkiClientVerifier::builder(Arc::new(client_auth_roots))
+            .build()
+            .map_err(|e| format!("SC hub client verifier error: {e}"))?;
+
+    let tls = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_client_cert_verifier(client_verifier)
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("SC hub TLS server config error: {e}"))?;
+
+    Ok(Arc::new(tls))
+}
+
 /// A fully constructed gateway with its state and metadata.
 pub struct BuiltGateway {
     /// Shared state for API/MCP handlers.
@@ -298,4 +392,6 @@ pub struct BuiltGateway {
     pub server_mac: Vec<u8>,
     /// The BACnet server (kept alive; drop to stop).
     pub server: GatewayServer,
+    /// Embedded BACnet/SC hub, when `transports.sc.listen` is configured.
+    pub sc_hub: Option<GatewayScHub>,
 }
