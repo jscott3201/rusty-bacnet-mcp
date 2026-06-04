@@ -119,7 +119,9 @@ impl GatewayMcp {
 
     // --- Bulk read tools (RPM-backed) ---
 
-    #[tool(description = "Read many object properties in one ReadPropertyMultiple request.")]
+    #[tool(
+        description = "Read many properties in one compact RPM request; detailed mode available."
+    )]
     async fn read_property_multiple(
         &self,
         params: Parameters<bulk::ReadPropertyMultipleParams>,
