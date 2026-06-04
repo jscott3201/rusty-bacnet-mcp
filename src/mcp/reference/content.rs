@@ -181,6 +181,12 @@ Reference resources:
   - bacnet://reference/priority-array explains command priority semantics.
   - bacnet://reference/errors maps protocol errors to likely next steps.
   - bacnet://reference/object-types/{type} gives object-specific guidance.
+
+State resources:
+  - bacnet://state/devices gives the bounded cached device table.
+  - bacnet://state/local-objects gives the bounded gateway-local object list.
+  - bacnet://state/pcap-captures gives the bounded live pcap capture session list.
+  - bacnet://audit/recent gives recent write/safety decisions.
 ";
 
 pub const PROPERTIES: &str = "\

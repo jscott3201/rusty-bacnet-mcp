@@ -149,6 +149,7 @@ State resources:
 - `bacnet://state/devices`: bounded discovered-device table.
 - `bacnet://state/local-objects`: bounded local object list.
 - `bacnet://state/config`: sanitized live runtime config.
+- `bacnet://state/pcap-captures`: bounded live pcap capture session list.
 - `bacnet://audit/recent`: bounded write audit tail.
 - `bacnet://topology/graph`: JSON topology snapshot.
 
