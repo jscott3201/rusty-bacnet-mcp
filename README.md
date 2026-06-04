@@ -138,7 +138,7 @@ Core tool groups:
   `read_schedule_exceptions`, `write_schedule_weekly`,
   `write_schedule_exceptions`
 - Trends: `get_trend_log_info`, `read_trend_log`
-- Diagnostics: `ping_device`, `probe_bbmd`
+- Diagnostics: `ping_device`, `probe_bbmd`, `analyze_bacnet_ip_packet`
 - Local objects: `list_local_objects`, `read_local_property`,
   `write_local_property`, `create_local_object`, `delete_local_object`
 
