@@ -51,7 +51,7 @@ impl GatewayMcp {
 
     // --- Discovery tools ---
 
-    #[tool(description = "Manually add a BACnet device instance at an IP:port address.")]
+    #[tool(description = "Manually add a BACnet device by B/IP ip:port or BACnet/SC VMAC.")]
     async fn register_device(
         &self,
         params: Parameters<discovery::RegisterDeviceParams>,

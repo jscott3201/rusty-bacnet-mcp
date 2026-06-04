@@ -103,16 +103,31 @@ impl GatewayClient {
         }
     }
 
-    /// Manually add a BACnet/IP device. Manual SC VMAC registration will use a
-    /// separate address parser so B/IP socket syntax cannot be confused with a
-    /// 6-byte VMAC.
-    pub async fn add_bip_device(&self, instance: u32, mac: &[u8]) -> Result<(), Error> {
+    /// Parse a manual address for the active transport.
+    ///
+    /// BACnet/IP uses IPv4 socket addresses (`192.0.2.10:47808`). BACnet/SC
+    /// uses 6-byte VMACs (`02:00:00:00:00:10` or `020000000010`).
+    pub fn parse_manual_address(&self, address: &str) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Bip(_) => {
+                let addr: std::net::SocketAddrV4 = address.parse().map_err(|e| {
+                    format!("invalid B/IP address '{address}' (expected ip:port): {e}")
+                })?;
+                Ok(crate::parse::socket_addr_to_mac(addr))
+            }
+            #[cfg(feature = "sc")]
+            Self::Sc(_) => crate::config::parse_sc_vmac(address)
+                .map(|vmac| vmac.to_vec())
+                .map_err(|e| format!("invalid BACnet/SC VMAC address: {e}")),
+        }
+    }
+
+    /// Manually add a BACnet device to the active transport's device table.
+    pub async fn add_device(&self, instance: u32, mac: &[u8]) -> Result<(), Error> {
         match self {
             Self::Bip(client) => client.add_device(instance, mac).await,
             #[cfg(feature = "sc")]
-            Self::Sc(_) => Err(Error::Encoding(
-                "manual B/IP device registration requires the B/IP transport".into(),
-            )),
+            Self::Sc(client) => client.add_device(instance, mac).await,
         }
     }
 
