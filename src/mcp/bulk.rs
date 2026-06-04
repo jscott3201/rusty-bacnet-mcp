@@ -6,7 +6,7 @@
 //! - `read_priority_array` — convenience wrapper that returns the 16-slot
 //!   priority array, present-value, and relinquish-default for a commandable
 //!   object. The agentic "who's overriding this point?" question.
-//! - `enumerate_objects` — Device.object_list, then chunked object_name reads.
+//! - `enumerate_objects` — Device.object_list, plus optional object_name reads.
 //! - `get_device_capabilities` — Device profile (services, object types,
 //!   segmentation, max APDU, vendor). Lets an agent reason about what services
 //!   it can actually call against the device.
@@ -26,6 +26,10 @@ use crate::parse::{
     parse_property_name, property_name,
 };
 use crate::state::GatewayState;
+
+mod compact;
+
+use compact::format_compact_object_list;
 
 // ─── read_property_multiple ─────────────────────────────────────────────────
 
@@ -277,6 +281,11 @@ pub struct EnumerateObjectsParams {
     /// of objects can be slow; default 500.
     #[schemars(description = "Max objects to return (default 500, hard cap 5000)")]
     pub limit: Option<u32>,
+    /// Fetch per-object object-name values. Default false keeps output compact
+    /// and avoids one extra RPM per chunk of objects.
+    #[schemars(description = "Fetch object-name values (default false)")]
+    #[serde(default)]
+    pub include_names: bool,
 }
 
 pub async fn enumerate_objects_impl(
@@ -298,6 +307,14 @@ pub async fn enumerate_objects_impl(
         return Ok(format!(
             "Device {} reports no objects.",
             params.device_instance
+        ));
+    }
+
+    if !params.include_names {
+        return Ok(format_compact_object_list(
+            params.device_instance,
+            &oids,
+            total_count,
         ));
     }
 
@@ -654,6 +671,26 @@ mod tests {
 
         let from_number: PropertyId = serde_json::from_str("87").expect("number form");
         assert!(matches!(from_number, PropertyId::Number(87)));
+    }
+
+    #[test]
+    fn enumerate_params_default_to_compact_names_omitted() {
+        let params: EnumerateObjectsParams =
+            serde_json::from_value(serde_json::json!({"device_instance": 1234})).unwrap();
+        assert!(!params.include_names);
+        assert_eq!(params.limit, None);
+    }
+
+    #[test]
+    fn enumerate_params_accept_name_detail_flag() {
+        let params: EnumerateObjectsParams = serde_json::from_value(serde_json::json!({
+            "device_instance": 1234,
+            "limit": 25,
+            "include_names": true
+        }))
+        .unwrap();
+        assert!(params.include_names);
+        assert_eq!(params.limit, Some(25));
     }
 
     #[test]

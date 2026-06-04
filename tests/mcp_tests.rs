@@ -248,6 +248,7 @@ async fn enumerate_objects_no_client() {
         bulk::EnumerateObjectsParams {
             device_instance: 1234,
             limit: None,
+            include_names: false,
         },
     )
     .await;

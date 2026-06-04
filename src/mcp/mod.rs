@@ -133,7 +133,7 @@ impl GatewayMcp {
         bulk::read_priority_array_impl(&self.state, params.0).await
     }
 
-    #[tool(description = "List object identifiers and names from a remote Device.object-list.")]
+    #[tool(description = "List grouped object identifiers; optionally fetch object names.")]
     async fn enumerate_objects(
         &self,
         params: Parameters<bulk::EnumerateObjectsParams>,

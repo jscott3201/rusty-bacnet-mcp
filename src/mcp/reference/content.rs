@@ -99,7 +99,7 @@ BACnet MCP Tool Guide - compact routing and workflow guide.
 Default workflow:
   1. discover_devices or register_device.
   2. get_device_capabilities before broad reads on an unknown device.
-  3. enumerate_objects to discover object identifiers and names.
+  3. enumerate_objects to discover object identifiers; set include_names for labels.
   4. read_property_multiple for snapshots; read_property for one-off scalar reads.
   5. Use write tools only after reading state and checking policy/audit posture.
 
@@ -121,7 +121,7 @@ Tool families:
     read_property reads one property from one object.
     read_property_multiple reads many object/property pairs in one RPM request.
     read_priority_array reads present-value, priority-array, and relinquish-default.
-    enumerate_objects reads Device.object-list and object names.
+    enumerate_objects groups Device.object-list; include_names fetches labels.
     get_device_capabilities reads vendor/protocol/service capability fields.
 
   remote writes:
