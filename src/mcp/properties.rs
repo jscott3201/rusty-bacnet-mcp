@@ -14,6 +14,8 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use bacnet_services::common::BACnetPropertyValue;
+use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::audit::AuditEntry;
@@ -80,6 +82,53 @@ pub struct WritePropertyParams {
     pub dry_run: bool,
 }
 
+/// One property value in a WritePropertyMultiple batch.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WritePropertyMultipleValueParams {
+    /// Property name (e.g., "present-value").
+    #[schemars(description = "Property name (e.g., 'present-value')")]
+    pub property: String,
+    /// Value to write (number, boolean, string, or null).
+    #[schemars(description = "Value to write: number, boolean, string, or null")]
+    pub value: serde_json::Value,
+    /// Optional array index for array properties.
+    #[schemars(description = "Array index for array properties (optional)")]
+    pub array_index: Option<u32>,
+    /// Optional command priority 1-16.
+    #[schemars(description = "Command priority 1-16 (optional)")]
+    pub priority: Option<u8>,
+}
+
+/// One object in a WritePropertyMultiple batch.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WritePropertyMultipleObjectParams {
+    /// Object type name (e.g., "analog-output", "binary-value").
+    #[schemars(description = "Object type name (e.g., 'analog-output', 'binary-value')")]
+    pub object_type: String,
+    /// Object instance number.
+    #[schemars(description = "Object instance number")]
+    pub object_instance: u32,
+    /// Properties to write on this object. Must be non-empty.
+    #[schemars(description = "Properties to write on this object (must be non-empty)")]
+    pub properties: Vec<WritePropertyMultipleValueParams>,
+}
+
+/// Parameters for write_property_multiple tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WritePropertyMultipleParams {
+    /// Device instance number of the target device.
+    #[schemars(description = "Device instance number (must be in the device table)")]
+    pub device_instance: u32,
+    /// Objects and property values to write. Must be non-empty.
+    #[schemars(description = "Objects and property values to write")]
+    pub objects: Vec<WritePropertyMultipleObjectParams>,
+    /// Dry-run mode. Validates every entry and records audit entries without
+    /// sending the WritePropertyMultiple APDU.
+    #[schemars(description = "If true, validate and audit without sending the WPM APDU")]
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 /// Parameters for relinquish_at_priority tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RelinquishParams {
@@ -109,6 +158,9 @@ pub struct RelinquishParams {
 fn default_present_value() -> String {
     "present-value".to_string()
 }
+
+const MAX_WPM_OBJECTS: usize = 32;
+const MAX_WPM_PROPERTIES: usize = 128;
 
 /// Per-call audit helper. Codex flagged two related issues in PR #3 review:
 ///
@@ -163,6 +215,48 @@ impl<'a> WriteAudit<'a> {
         ));
         reason
     }
+}
+
+#[derive(Debug, Clone)]
+struct PreparedAudit {
+    target: String,
+    property: String,
+    priority: Option<u8>,
+}
+
+impl PreparedAudit {
+    fn append(
+        &self,
+        state: &GatewayState,
+        dry_run: bool,
+        decision: &'static str,
+        reason: String,
+    ) -> String {
+        state.audit.append(AuditEntry::now(
+            "write_property_multiple",
+            Some(self.target.clone()),
+            Some(self.property.clone()),
+            self.priority,
+            dry_run,
+            decision,
+            reason.clone(),
+        ));
+        reason
+    }
+}
+
+struct PrepareBatch {
+    specs: Vec<WriteAccessSpecification>,
+    audits: Vec<PreparedAudit>,
+    object_count: usize,
+    property_count: usize,
+}
+
+struct PrepareError {
+    audit: PreparedAudit,
+    decision: &'static str,
+    reason: String,
+    message: String,
 }
 
 pub async fn read_property_impl(
@@ -300,6 +394,82 @@ pub async fn write_property_impl(
     }
 }
 
+pub async fn write_property_multiple_impl(
+    state: &GatewayState,
+    params: WritePropertyMultipleParams,
+) -> Result<String, String> {
+    validate_wpm_shape(&params)?;
+    let requested = requested_audits(&params);
+
+    if let Err(msg) = state.require_writable() {
+        append_batch_audits(state, &requested, params.dry_run, "deny", &msg);
+        return Err(msg);
+    }
+
+    let batch = match prepare_wpm_batch(state, &params) {
+        Ok(batch) => batch,
+        Err(err) => {
+            err.audit
+                .append(state, params.dry_run, err.decision, err.reason);
+            return Err(err.message);
+        }
+    };
+
+    if params.dry_run {
+        append_batch_audits(state, &batch.audits, true, "allow", "");
+        return Ok(format!(
+            "[dry-run] Would write {} propert{} across {} object{} on device {}",
+            batch.property_count,
+            if batch.property_count == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            batch.object_count,
+            if batch.object_count == 1 { "" } else { "s" },
+            params.device_instance
+        ));
+    }
+
+    let client = match state.require_client() {
+        Ok(client) => client,
+        Err(msg) => {
+            append_batch_audits(state, &batch.audits, false, "error", &msg);
+            return Err(msg);
+        }
+    };
+
+    if let Err(msg) = state.resolve_device(params.device_instance).await {
+        append_batch_audits(state, &batch.audits, false, "error", &msg);
+        return Err(msg);
+    }
+
+    append_batch_audits(state, &batch.audits, false, "allow", "");
+
+    match client
+        .write_property_multiple_to_device(params.device_instance, batch.specs)
+        .await
+    {
+        Ok(()) => Ok(format!(
+            "Successfully wrote {} propert{} across {} object{} on device {}",
+            batch.property_count,
+            if batch.property_count == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            batch.object_count,
+            if batch.object_count == 1 { "" } else { "s" },
+            params.device_instance
+        )),
+        Err(e) => {
+            let msg = format!("{e}");
+            append_batch_audits(state, &batch.audits, false, "error", &msg);
+            Err(format!("Error writing properties: {msg}"))
+        }
+    }
+}
+
 /// Release a priority slot on a commandable BACnet object.
 ///
 /// Encodes a NULL value at `params.priority`. The slot becomes inactive and
@@ -388,4 +558,172 @@ pub async fn relinquish_at_priority_impl(
             audit.err(format!("{e}"))
         )),
     }
+}
+
+fn validate_wpm_shape(params: &WritePropertyMultipleParams) -> Result<(), String> {
+    if params.objects.is_empty() {
+        return Err("'objects' must contain at least one entry".into());
+    }
+    if params.objects.len() > MAX_WPM_OBJECTS {
+        return Err(format!(
+            "'objects' contains {} entries; max is {MAX_WPM_OBJECTS}",
+            params.objects.len()
+        ));
+    }
+    let mut total = 0usize;
+    for obj in &params.objects {
+        if obj.properties.is_empty() {
+            return Err(format!(
+                "object {}:{} has no properties listed",
+                obj.object_type, obj.object_instance
+            ));
+        }
+        total += obj.properties.len();
+    }
+    if total > MAX_WPM_PROPERTIES {
+        return Err(format!(
+            "batch contains {total} properties; max is {MAX_WPM_PROPERTIES}"
+        ));
+    }
+    Ok(())
+}
+
+fn requested_audits(params: &WritePropertyMultipleParams) -> Vec<PreparedAudit> {
+    params
+        .objects
+        .iter()
+        .flat_map(|obj| {
+            obj.properties.iter().map(|prop| PreparedAudit {
+                target: format!("{}:{}", obj.object_type, obj.object_instance),
+                property: prop.property.clone(),
+                priority: prop.priority,
+            })
+        })
+        .collect()
+}
+
+fn append_batch_audits(
+    state: &GatewayState,
+    audits: &[PreparedAudit],
+    dry_run: bool,
+    decision: &'static str,
+    reason: &str,
+) {
+    for audit in audits {
+        audit.append(state, dry_run, decision, reason.to_string());
+    }
+}
+
+fn prepare_wpm_batch(
+    state: &GatewayState,
+    params: &WritePropertyMultipleParams,
+) -> Result<PrepareBatch, PrepareError> {
+    let mut specs = Vec::with_capacity(params.objects.len());
+    let mut audits = Vec::new();
+    let mut property_count = 0usize;
+
+    for obj in &params.objects {
+        let target = format!("{}:{}", obj.object_type, obj.object_instance);
+        let obj_type = parse_object_type(&obj.object_type).map_err(|reason| {
+            let audit = PreparedAudit {
+                target: target.clone(),
+                property: "-".into(),
+                priority: None,
+            };
+            PrepareError {
+                audit,
+                decision: "deny",
+                reason: reason.clone(),
+                message: reason,
+            }
+        })?;
+        let oid = ObjectIdentifier::new(obj_type, obj.object_instance).map_err(|e| {
+            let reason = format!("{e}");
+            let audit = PreparedAudit {
+                target: target.clone(),
+                property: "-".into(),
+                priority: None,
+            };
+            PrepareError {
+                audit,
+                decision: "deny",
+                reason: reason.clone(),
+                message: reason,
+            }
+        })?;
+
+        let mut values = Vec::with_capacity(obj.properties.len());
+        for prop in &obj.properties {
+            let audit = PreparedAudit {
+                target: target.clone(),
+                property: prop.property.clone(),
+                priority: prop.priority,
+            };
+            let property = parse_property_name(&prop.property).map_err(|reason| PrepareError {
+                audit: audit.clone(),
+                decision: "deny",
+                reason: reason.clone(),
+                message: reason,
+            })?;
+            if let Some(priority) = prop.priority
+                && !(1..=16).contains(&priority)
+            {
+                let reason = format!("priority {priority} out of BACnet range 1..=16");
+                return Err(PrepareError {
+                    audit,
+                    decision: "deny",
+                    reason: reason.clone(),
+                    message: reason,
+                });
+            }
+            if let PolicyDecision::Deny(reason) = state.flags.policy().evaluate(oid, prop.priority)
+            {
+                return Err(PrepareError {
+                    audit,
+                    decision: "deny",
+                    reason: reason.clone(),
+                    message: format!("Policy denied: {reason}"),
+                });
+            }
+            let value = crate::parse::json_to_property_value(&prop.value).map_err(|e| {
+                let reason = format!("Error parsing value: {e}");
+                PrepareError {
+                    audit: audit.clone(),
+                    decision: "error",
+                    reason: reason.clone(),
+                    message: reason,
+                }
+            })?;
+            let mut buf = bytes::BytesMut::new();
+            bacnet_encoding::primitives::encode_property_value(&mut buf, &value).map_err(|e| {
+                let reason = format!("Error encoding value: {e}");
+                PrepareError {
+                    audit: audit.clone(),
+                    decision: "error",
+                    reason: reason.clone(),
+                    message: reason,
+                }
+            })?;
+            values.push(BACnetPropertyValue {
+                property_identifier: property,
+                property_array_index: prop.array_index,
+                value: buf.to_vec(),
+                priority: prop.priority,
+            });
+            audits.push(audit);
+            property_count += 1;
+        }
+
+        specs.push(WriteAccessSpecification {
+            object_identifier: oid,
+            list_of_properties: values,
+        });
+    }
+
+    Ok(PrepareBatch {
+        specs,
+        audits,
+        object_count: params.objects.len(),
+        property_count,
+    })
 }

@@ -87,13 +87,20 @@ bacnet-mcp --config bacnet-mcp.json --transport both --bind 127.0.0.1:3000
 
 ## MCP Surface
 
-**Tools** (10 today; expanding in 0.3):
+**Tools** include:
 
 ```
-discover_devices, list_known_devices, get_device_info, register_device,
-read_property, write_property,
-list_local_objects, read_local_property, write_local_property,
-create_local_object, delete_local_object
+Discovery: register_device, discover_devices, list_known_devices, get_device_info
+Remote reads: read_property, read_property_multiple, read_priority_array,
+  enumerate_objects, get_device_capabilities
+Remote writes: write_property, write_property_multiple, relinquish_at_priority
+Alarms/events: get_alarm_summary, get_event_information, acknowledge_alarm
+Schedules: read_schedule, read_schedule_weekly, read_schedule_exceptions,
+  write_schedule_weekly, write_schedule_exceptions
+Trends: get_trend_log_info, read_trend_log
+Diagnostics: ping_device, probe_bbmd
+Local objects: list_local_objects, read_local_property, write_local_property,
+  create_local_object, delete_local_object
 ```
 
 **Resources**:

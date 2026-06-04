@@ -107,6 +107,7 @@ Token-efficient usage:
   - Prefer read_property_multiple over many read_property calls.
   - Prefer read_schedule before schedule array reads so you know the target refs.
   - Prefer get_trend_log_info before read_trend_log so you can choose a bounded range.
+  - Prefer write_property_multiple for coordinated batch writes after dry-run.
   - Fetch detailed reference resources only when a workflow needs the background.
 
 Tool families:
@@ -122,6 +123,11 @@ Tool families:
     read_priority_array reads present-value, priority-array, and relinquish-default.
     enumerate_objects reads Device.object-list and object names.
     get_device_capabilities reads vendor/protocol/service capability fields.
+
+  remote writes:
+    write_property writes one property value.
+    write_property_multiple writes multiple values in one WPM request.
+    relinquish_at_priority releases one command priority slot by writing NULL.
 
   alarms and events:
     get_alarm_summary is the cheap active-alarm triage call.
@@ -152,6 +158,7 @@ Safety posture:
   - Use dry_run where available to validate and record intent without sending APDUs.
   - Priorities 1-8 are reserved by the default policy; release overrides with
     relinquish_at_priority rather than writing a competing lower-priority value.
+  - For batch writes, one denied entry prevents dispatch of the whole WPM APDU.
   - Review bacnet://audit/recent after any denied, dry-run, or failed write path.
 
 Reference resources:

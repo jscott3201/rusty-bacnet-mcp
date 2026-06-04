@@ -97,6 +97,14 @@ impl GatewayMcp {
         properties::write_property_impl(&self.state, params.0).await
     }
 
+    #[tool(description = "Safety-gated remote WritePropertyMultiple batch; use dry_run first.")]
+    async fn write_property_multiple(
+        &self,
+        params: Parameters<properties::WritePropertyMultipleParams>,
+    ) -> Result<String, String> {
+        properties::write_property_multiple_impl(&self.state, params.0).await
+    }
+
     #[tool(description = "Safety-gated write of NULL to release one command priority slot.")]
     async fn relinquish_at_priority(
         &self,
