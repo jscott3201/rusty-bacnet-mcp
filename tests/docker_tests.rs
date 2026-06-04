@@ -80,17 +80,43 @@ fn container_default_config_is_http_bound_read_only_bip() {
 fn ci_docker_build_is_main_tag_or_manual_only() {
     assert!(CI_WORKFLOW.contains("docker-build"));
     assert!(CI_WORKFLOW.contains("scripts/docker-ci.sh"));
-    let docker_job = CI_WORKFLOW
-        .split("  docker-build:")
-        .nth(1)
-        .expect("docker-build job missing")
-        .split("\n  deny:")
-        .next()
-        .expect("docker-build job should precede deny job");
+    let docker_job = ci_job("docker-build", "deny");
     assert!(docker_job.contains("github.event_name == 'workflow_dispatch'"));
     assert!(docker_job.contains("startsWith(github.ref, 'refs/tags/')"));
     assert!(docker_job.contains("github.ref == 'refs/heads/main'"));
     assert!(docker_job.contains("github.base_ref == 'main'"));
     assert!(!docker_job.contains("refs/heads/development"));
     assert!(!docker_job.contains("github.base_ref == 'development'"));
+}
+
+#[test]
+fn ci_dev_prs_lint_sc_without_running_heavy_jobs() {
+    let clippy_job = ci_job("clippy", "test");
+    assert!(
+        clippy_job.contains("cargo clippy --all-targets --features bin,sc --locked -- -D warnings")
+    );
+
+    for (job_name, next_job) in [
+        ("test", "build-bin"),
+        ("build-bin", "docker-build"),
+        ("docker-build", "deny"),
+    ] {
+        let job = ci_job(job_name, next_job);
+        assert!(job.contains("github.event_name == 'workflow_dispatch'"));
+        assert!(job.contains("startsWith(github.ref, 'refs/tags/')"));
+        assert!(job.contains("github.ref == 'refs/heads/main'"));
+        assert!(job.contains("github.base_ref == 'main'"));
+        assert!(!job.contains("refs/heads/development"));
+        assert!(!job.contains("github.base_ref == 'development'"));
+    }
+}
+
+fn ci_job(name: &str, next_name: &str) -> &'static str {
+    CI_WORKFLOW
+        .split(&format!("  {name}:"))
+        .nth(1)
+        .unwrap_or_else(|| panic!("{name} job missing"))
+        .split(&format!("\n  {next_name}:"))
+        .next()
+        .unwrap_or_else(|| panic!("{name} job should precede {next_name} job"))
 }
