@@ -139,7 +139,7 @@ Core tool groups:
   `write_schedule_exceptions`
 - Trends: `get_trend_log_info`, `read_trend_log`
 - Diagnostics: `ping_device`, `probe_bbmd`, `analyze_bacnet_ip_packet`,
-  `list_pcap_interfaces` with the `pcap` feature
+  `list_pcap_interfaces`, `analyze_pcap_file` with the `pcap` feature
 - Local objects: `list_local_objects`, `read_local_property`,
   `write_local_property`, `create_local_object`, `delete_local_object`
 
@@ -276,7 +276,9 @@ cap, and secret scan run on PRs. Heavy OS matrix tests, release builds, and
 Docker builds are reserved for main/manual paths.
 
 Optional BACnet/IP capture helpers are available with `--features bin,sc,pcap`.
-The default binary build does not pull `pcap` in.
+The default binary build does not pull `pcap` in. `analyze_pcap_file` reads
+offline pcap files with Ethernet, raw IPv4, BSD null, or Linux SLL datalinks
+and returns bounded BACnet/IP service, peer, BVLC, and decode-error summaries.
 
 ## Built On
 

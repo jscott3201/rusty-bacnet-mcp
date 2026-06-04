@@ -43,7 +43,7 @@ pub enum WireInputKind {
 }
 
 impl WireInputKind {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Bvlc => "bvlc",
             Self::Ipv4 => "ipv4",
@@ -74,35 +74,27 @@ pub fn analyze_bacnet_ip_packet_impl(
         ));
     }
 
-    let frame = extract_bacnet_payload(&bytes, params.input)?;
-    if frame.payload.is_empty() {
-        return Err("BACnet/IP payload is empty".to_string());
-    }
-
-    let packet = decode_packet(frame.payload)?;
-    let summary = summarize(&packet);
+    let decoded = decode_frame_bytes(&bytes, params.input)?;
+    let analysis = &decoded.analysis;
 
     let mut out = String::new();
     out.push_str("BACnet/IP packet analysis:\n");
     out.push_str(&format!(
         "  input: {} frame_bytes={} bvlc_bytes={}\n",
-        params.input.label(),
-        bytes.len(),
-        frame.payload.len()
+        analysis.input.label(),
+        analysis.frame_bytes,
+        analysis.bvlc_bytes
     ));
-    if let Some(flow) = frame.flow {
-        out.push_str(&format!(
-            "  udp: {}:{} -> {}:{}\n",
-            flow.src_ip, flow.src_port, flow.dst_ip, flow.dst_port
-        ));
+    if let Some(flow) = analysis.flow {
+        out.push_str(&format!("  udp: {flow}\n"));
     }
     out.push_str(&format!(
         "  summary: {} / {}\n",
-        summary.bvlc, summary.service
+        analysis.bvlc, analysis.service
     ));
 
     if params.response_mode == WireResponseMode::Detailed {
-        let lines = format_detail(&packet);
+        let lines = format_detail(&decoded.packet);
         let emitted = lines.len().min(detail_limit);
         for line in lines.iter().take(emitted) {
             out.push_str(line);
@@ -117,6 +109,68 @@ pub fn analyze_bacnet_ip_packet_impl(
     }
 
     Ok(out)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WireAnalysis {
+    pub(crate) input: WireInputKind,
+    pub(crate) frame_bytes: usize,
+    pub(crate) bvlc_bytes: usize,
+    pub(crate) flow: Option<WireFlow>,
+    pub(crate) bvlc: String,
+    pub(crate) service: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WireFlow {
+    pub(crate) src_ip: Ipv4Addr,
+    pub(crate) dst_ip: Ipv4Addr,
+    pub(crate) src_port: u16,
+    pub(crate) dst_port: u16,
+}
+
+impl std::fmt::Display for WireFlow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{} -> {}:{}",
+            self.src_ip, self.src_port, self.dst_ip, self.dst_port
+        )
+    }
+}
+
+#[cfg(feature = "pcap")]
+pub(crate) fn analyze_frame_bytes(
+    bytes: &[u8],
+    input: WireInputKind,
+) -> Result<WireAnalysis, String> {
+    Ok(decode_frame_bytes(bytes, input)?.analysis)
+}
+
+struct FrameDecode {
+    analysis: WireAnalysis,
+    packet: DecodedPacket,
+}
+
+fn decode_frame_bytes(bytes: &[u8], input: WireInputKind) -> Result<FrameDecode, String> {
+    let frame = extract_bacnet_payload(bytes, input)?;
+    if frame.payload.is_empty() {
+        return Err("BACnet/IP payload is empty".to_string());
+    }
+
+    let packet = decode_packet(frame.payload)?;
+    let summary = summarize(&packet);
+    Ok(FrameDecode {
+        analysis: WireAnalysis {
+            input,
+            frame_bytes: bytes.len(),
+            bvlc_bytes: frame.payload.len(),
+            flow: frame.flow,
+            bvlc: summary.bvlc,
+            service: summary.service,
+        },
+        packet,
+    })
 }
 
 fn detail_limit(raw: Option<u32>) -> Result<usize, String> {
@@ -171,15 +225,7 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>, String> {
 #[derive(Debug, Clone, Copy)]
 struct ExtractedFrame<'a> {
     payload: &'a [u8],
-    flow: Option<UdpFlow>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct UdpFlow {
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
-    src_port: u16,
-    dst_port: u16,
+    flow: Option<WireFlow>,
 }
 
 fn extract_bacnet_payload(raw: &[u8], input: WireInputKind) -> Result<ExtractedFrame<'_>, String> {
@@ -298,7 +344,7 @@ fn extract_from_ipv4(raw: &[u8]) -> Result<ExtractedFrame<'_>, String> {
         ));
     }
 
-    let flow = UdpFlow {
+    let flow = WireFlow {
         src_ip: Ipv4Addr::new(raw[12], raw[13], raw[14], raw[15]),
         dst_ip: Ipv4Addr::new(raw[16], raw[17], raw[18], raw[19]),
         src_port: u16::from_be_bytes([udp[0], udp[1]]),
