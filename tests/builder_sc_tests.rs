@@ -1,6 +1,7 @@
 #![cfg(feature = "sc")]
 
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,7 +10,7 @@ use bacnet_mcp::builder::GatewayBuilder;
 use bacnet_mcp::config::GatewayConfig;
 use bacnet_transport::sc_frame::Vmac;
 use bacnet_transport::sc_hub::ScHub;
-use rcgen::{CertificateParams, Issuer, KeyPair};
+use rcgen::{CertificateParams, Issuer, KeyPair, SanType};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls;
 use tokio_rustls::rustls::pki_types::pem::PemObject;
@@ -100,7 +101,10 @@ fn generate_test_certs() -> CertMaterial {
     let ca_cert = ca_params.self_signed(&ca_key).unwrap();
     let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
 
-    let server_params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+    let mut server_params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+    server_params
+        .subject_alt_names
+        .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     let server_key = KeyPair::generate().unwrap();
     let server_cert = server_params.signed_by(&server_key, &ca_issuer).unwrap();
 
@@ -124,7 +128,7 @@ async fn start_sc_hub_mtls(certs: &CertMaterial, hub_vmac: Vmac) -> (ScHub, Stri
         .await
         .unwrap();
     let addr = hub.local_addr().unwrap();
-    (hub, format!("wss://localhost:{}", addr.port()))
+    (hub, format!("wss://127.0.0.1:{}", addr.port()))
 }
 
 fn make_server_tls_config_mtls(certs: &CertMaterial) -> Arc<rustls::ServerConfig> {
