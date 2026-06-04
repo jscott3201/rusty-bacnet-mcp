@@ -26,6 +26,7 @@ pub mod config;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod parse;
+pub mod pcap_state;
 pub mod runtime;
 pub mod safety;
 pub mod state;

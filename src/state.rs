@@ -23,6 +23,7 @@ use bacnet_services::cov::COVNotificationRequest;
 
 use crate::audit::{AuditLog, build_audit_log};
 use crate::config::GatewayConfig;
+use crate::pcap_state::PcapCaptureRegistry;
 use crate::runtime::GatewayClient;
 use crate::safety::{LivePolicy, WritePolicy, build_live_policy};
 
@@ -134,6 +135,8 @@ pub struct GatewayState {
     /// Receiver for inbound COV notifications. Created at stack startup so
     /// notification polling sees events that arrived before the poll call.
     cov_rx: Option<Arc<Mutex<broadcast::Receiver<COVNotificationRequest>>>>,
+    /// BACnet/IP pcap capture sessions started by MCP diagnostics.
+    pub pcap_captures: Arc<PcapCaptureRegistry>,
 }
 
 impl GatewayState {
@@ -154,6 +157,7 @@ impl GatewayState {
             audit,
             client: None,
             cov_rx: None,
+            pcap_captures: Arc::new(PcapCaptureRegistry::new()),
         }
     }
 
@@ -175,6 +179,7 @@ impl GatewayState {
             audit,
             client: Some(Arc::new(client)),
             cov_rx: Some(Arc::new(Mutex::new(cov_rx))),
+            pcap_captures: Arc::new(PcapCaptureRegistry::new()),
         })
     }
 

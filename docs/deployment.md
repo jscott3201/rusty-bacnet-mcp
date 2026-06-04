@@ -79,6 +79,19 @@ The Dockerfile builds with Alpine/musl and supports:
 The default feature set is `bin,sc`, so both BACnet/IP and BACnet/SC runtime
 support are compiled in.
 
+Pcap-enabled Linux images can be built with the Alpine runtime target:
+
+```bash
+BACNET_MCP_DOCKER_TARGET=runtime \
+BACNET_MCP_DOCKER_FEATURES=bin,sc,pcap \
+  scripts/docker-build.sh
+```
+
+The build stage installs `libpcap-dev` so the musl release binary can link the
+optional pcap feature. Live capture still requires the container to run with
+host capture privileges, for example `--network host` plus appropriate Linux
+capabilities for the selected interface.
+
 Runtime ports:
 
 - `3000/tcp`: MCP streamable HTTP.
@@ -133,4 +146,3 @@ cargo doc --workspace --no-deps --features bin,sc --locked
 bash .github/scripts/check-file-size.sh
 bash .github/scripts/check-no-secrets.sh
 ```
-

@@ -19,6 +19,7 @@ fn dockerfile_builds_sc_enabled_release_binary() {
     assert!(DOCKERFILE.contains(r#"cargo build --release --locked --features "${FEATURES}""#));
     assert!(DOCKERFILE.contains("build-base"));
     assert!(DOCKERFILE.contains("cmake"));
+    assert!(DOCKERFILE.contains("libpcap-dev"));
     assert!(DOCKERFILE.contains("pkgconfig"));
     assert!(DOCKERFILE.contains("perl"));
     assert!(DOCKERFILE.contains("--mount=type=cache,target=/usr/local/cargo/registry"));

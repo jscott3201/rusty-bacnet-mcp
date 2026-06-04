@@ -90,6 +90,8 @@ commonly exceed APDU limits. COV polling is bounded by `max_events`.
   is enabled.
 - `analyze_pcap_file`: read an offline pcap file and summarize BACnet/IP
   services, BVLC functions, peers, decoded samples, and decode errors.
+- `start_pcap_capture`, `stop_pcap_capture`, `list_pcap_captures`,
+  `read_pcap_capture`: manage bounded live BACnet/IP capture sessions.
 
 `probe_bbmd` is intentionally unavailable on BACnet/SC because SC has no BBMD
 tables.
@@ -107,6 +109,12 @@ for a shorter listing.
 `analyze_pcap_file` is also feature-gated. It opens local pcap files with
 Ethernet, BSD null, raw IPv4, or Linux SLL datalinks and scans a bounded packet
 count. The report is deterministic and row-capped for MCP use.
+
+Live pcap capture is feature-gated and requires host capture permissions. The
+default BPF is `udp port 47808`; callers can override it when inspecting BBMD,
+foreign-device, or routed BACnet/IP traffic. Sessions auto-stop at `max_packets`
+and retain a bounded recent-packet ring plus aggregate service, BVLC, peer, and
+decode-error counts.
 
 ## Local Objects
 
