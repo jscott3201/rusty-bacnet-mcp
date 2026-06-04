@@ -75,12 +75,12 @@ pub fn state_resources() -> Vec<Resource> {
         resource(
             "bacnet://state/devices",
             "Discovered Devices",
-            "Current device table — discovered devices with instance, vendor, MAC",
+            "Bounded current device table — discovered devices with instance, vendor, MAC",
         ),
         resource(
             "bacnet://state/local-objects",
             "Local Objects",
-            "Objects in the gateway's local BACnet database",
+            "Bounded objects in the gateway's local BACnet database",
         ),
         resource(
             "bacnet://state/config",

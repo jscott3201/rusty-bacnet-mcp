@@ -373,16 +373,12 @@ impl GatewayMcp {
             }
             "bacnet://state/local-objects" => {
                 let db = self.state.db.read().await;
-                let mut result = format!("{} local object(s):\n", db.len());
-                for (oid, obj) in db.iter_objects() {
-                    result.push_str(&format!(
-                        "  {}:{} \"{}\"\n",
-                        crate::parse::object_type_name(oid.object_type()),
-                        oid.instance_number(),
-                        obj.object_name(),
-                    ));
-                }
-                Some(result)
+                let rows = objects::collect_local_object_rows(&db, None);
+                Some(objects::format_local_object_rows(
+                    &rows,
+                    objects::DEFAULT_LIST_LOCAL_OBJECTS_LIMIT,
+                    objects::LocalObjectListFormat::StateResource,
+                ))
             }
             "bacnet://audit/recent" => {
                 // Last 100 entries by default. Truncate to keep the resource
