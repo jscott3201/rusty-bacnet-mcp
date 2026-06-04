@@ -10,7 +10,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::config::GatewayConfig;
+use crate::config::{GatewayConfig, describe_sc_runtime};
 use crate::parse::{
     decode_raw_property_to_json_with_context, object_type_name, parse_object_type,
     parse_property_name, property_name,
@@ -382,10 +382,7 @@ fn status_text(state: &GatewayState, config: &GatewayConfig, http_listening: boo
         .transports
         .sc
         .as_ref()
-        .map(|s| {
-            let hub = s.hub_uri.as_deref().unwrap_or("<missing hub>");
-            format!("SC node {hub} net {}", s.network_number)
-        })
+        .map(|s| format!("SC {} net {}", describe_sc_runtime(s), s.network_number))
         .unwrap_or_else(|| "SC not configured".to_string());
     let http = match (http_listening, &config.mcp.http) {
         (true, Some(h)) => format!("HTTP up at {}/mcp", h.bind),

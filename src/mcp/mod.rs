@@ -28,6 +28,7 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, tool, tool_handler, tool_router};
 
+use crate::config::describe_sc_runtime;
 use crate::state::GatewayState;
 
 /// MCP server handler for the BACnet gateway.
@@ -433,14 +434,10 @@ impl GatewayMcp {
                     ));
                 }
                 if let Some(sc) = &config.transports.sc {
-                    let role = sc
-                        .hub_uri
-                        .as_deref()
-                        .map(|uri| format!("Node connected to {uri}"))
-                        .unwrap_or_else(|| "(unconfigured)".to_string());
                     result.push_str(&format!(
                         "Transport SC: {}, network {}\n",
-                        role, sc.network_number
+                        describe_sc_runtime(sc),
+                        sc.network_number
                     ));
                 }
                 Some(result)

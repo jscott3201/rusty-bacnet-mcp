@@ -63,6 +63,34 @@ async fn sc_runtime_connects_server_and_client_nodes_to_local_hub() {
 }
 
 #[tokio::test]
+async fn sc_embedded_hub_builds_and_connects_local_nodes() {
+    let _guard = SC_HUB_TEST_LOCK.lock().await;
+    let certs = generate_test_certs();
+    let cert_dir = TempCertDir::new(&certs);
+
+    let mut built = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        build_embedded_sc_gateway(&cert_dir),
+    )
+    .await
+    .expect("embedded SC gateway build should not hang")
+    .expect("embedded SC gateway should start hub and connect local nodes");
+
+    let hub_addr = built
+        .sc_hub
+        .as_ref()
+        .and_then(|hub| hub.local_addr())
+        .expect("embedded hub should expose local address");
+    assert_ne!(hub_addr.port(), 0);
+    assert_eq!(built.server_mac, [0x02, 0, 0, 0, 0, 0x02]);
+    assert_eq!(built.state.require_client().unwrap().transport_name(), "sc");
+
+    if let Some(hub) = built.sc_hub.as_mut() {
+        hub.stop().await;
+    }
+}
+
+#[tokio::test]
 #[cfg(feature = "mcp")]
 async fn sc_register_device_accepts_vmac_and_rejects_bip_socket_address() {
     let _guard = SC_HUB_TEST_LOCK.lock().await;
@@ -150,6 +178,38 @@ async fn build_sc_gateway(
     GatewayBuilder::new(config).build().await
 }
 
+async fn build_embedded_sc_gateway(
+    cert_dir: &TempCertDir,
+) -> Result<bacnet_mcp::builder::BuiltGateway, bacnet_mcp::builder::BuildError> {
+    let json = format!(
+        r#"{{
+            "device": {{
+                "instance": 389001,
+                "name": "SC Embedded Gateway",
+                "vendor_id": 999
+            }},
+            "transports": {{
+                "sc": {{
+                    "listen": "127.0.0.1:0",
+                    "cert": "{}",
+                    "key": "{}",
+                    "ca": "{}",
+                    "hub_vmac": "02:00:00:00:00:ff",
+                    "client_vmac": "02:00:00:00:00:01",
+                    "server_vmac": "02:00:00:00:00:02",
+                    "network_number": 2
+                }}
+            }}
+        }}"#,
+        cert_dir.server_cert.display(),
+        cert_dir.server_key.display(),
+        cert_dir.ca_cert.display(),
+    );
+    let config = GatewayConfig::from_json(&json).unwrap();
+    config.validate().unwrap();
+    GatewayBuilder::new(config).build().await
+}
+
 struct CertMaterial {
     ca_cert_pem: String,
     server_cert_pem: String,
@@ -230,6 +290,8 @@ fn make_server_tls_config_mtls(certs: &CertMaterial) -> Arc<rustls::ServerConfig
 struct TempCertDir {
     root: PathBuf,
     ca_cert: PathBuf,
+    server_cert: PathBuf,
+    server_key: PathBuf,
     client_cert: PathBuf,
     client_key: PathBuf,
 }
@@ -239,11 +301,15 @@ impl TempCertDir {
         let root = unique_temp_dir();
         fs::create_dir_all(&root).unwrap();
         let ca_cert = write_pem(&root, "ca.pem", &certs.ca_cert_pem);
+        let server_cert = write_pem(&root, "server.pem", &certs.server_cert_pem);
+        let server_key = write_pem(&root, "server.key", &certs.server_key_pem);
         let client_cert = write_pem(&root, "client.pem", &certs.client_cert_pem);
         let client_key = write_pem(&root, "client.key", &certs.client_key_pem);
         Self {
             root,
             ca_cert,
+            server_cert,
+            server_key,
             client_cert,
             client_key,
         }
