@@ -50,6 +50,12 @@ status
 devices
 whois [low] [high] [timeout_seconds]
 read <device> <object-type> <object-instance> <property>
+pcap interfaces [limit=N] [addresses=false]
+pcap file <path> [max=N] [rows=N] [errors=false]
+pcap start <interface> [filter="udp port 47808"] [max=N] [ring=N] [timeout_ms=N] [promisc=true]
+pcap list [active|all] [rows=N]
+pcap read <session_id> [rows=N] [errors=false]
+pcap stop <session_id>
 ```
 
 The Configure tab uses the same JSON parser and validator as startup. Hot-safe

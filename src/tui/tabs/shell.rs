@@ -16,6 +16,9 @@ use crate::parse::{
     parse_property_name, property_name,
 };
 use crate::state::GatewayState;
+use crate::tui::tabs::shell_pcap::{
+    PcapShellCommand, execute_pcap_shell_command, parse_pcap_command,
+};
 use crate::tui::theme;
 
 const MAX_OUTPUT_RECORDS: usize = 100;
@@ -39,6 +42,7 @@ pub enum ShellCommand {
         object_instance: u32,
         property: PropertyIdentifier,
     },
+    Pcap(PcapShellCommand),
 }
 
 /// One completed command row.
@@ -146,7 +150,21 @@ impl Default for ShellState {
 }
 
 pub fn parse_shell_command(input: &str) -> Result<Option<ShellCommand>, String> {
-    let parts: Vec<&str> = input.split_whitespace().collect();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed
+        .split_whitespace()
+        .next()
+        .is_some_and(|command| command.eq_ignore_ascii_case("pcap"))
+    {
+        return parse_pcap_command(trimmed)
+            .map(ShellCommand::Pcap)
+            .map(Some);
+    }
+
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
     let Some((command, args)) = parts.split_first() else {
         return Ok(None);
     };
@@ -200,6 +218,7 @@ pub async fn execute_shell_command(
             )
             .await
         }
+        ShellCommand::Pcap(command) => execute_pcap_shell_command(command, state).await,
     }
 }
 
@@ -363,7 +382,13 @@ fn help_text() -> &'static str {
   status
   devices
   whois [low] [high] [timeout_seconds]
-  read <device> <object-type> <object-instance> <property>"
+  read <device> <object-type> <object-instance> <property>
+  pcap interfaces [limit=N] [addresses=false]
+  pcap file <path> [max=N] [rows=N] [errors=false]
+  pcap start <interface> [filter=\"udp port 47808\"] [max=N] [ring=N] [timeout_ms=N] [promisc=true]
+  pcap list [active|all] [rows=N]
+  pcap read <session_id> [rows=N] [errors=false]
+  pcap stop <session_id>"
 }
 
 fn status_text(state: &GatewayState, config: &GatewayConfig, http_listening: bool) -> String {
@@ -541,6 +566,18 @@ mod tests {
             parse_shell_command("?").unwrap().unwrap(),
             ShellCommand::Help
         );
+    }
+
+    #[test]
+    fn parse_shell_command_delegates_pcap_commands() {
+        let parsed = parse_shell_command("pcap list active").unwrap().unwrap();
+        assert!(matches!(
+            parsed,
+            ShellCommand::Pcap(PcapShellCommand::List {
+                include_finished: Some(false),
+                ..
+            })
+        ));
     }
 
     #[test]

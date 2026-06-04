@@ -4,6 +4,7 @@ pub mod configure;
 pub mod observe;
 pub mod operate;
 pub mod shell;
+pub mod shell_pcap;
 
 /// Top-level tabs in the operator console.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
