@@ -1,0 +1,33 @@
+{
+  "mcp": {
+    "read_only": true,
+    "http": {
+      "bind": "127.0.0.1:3000"
+    }
+  },
+  "device": {
+    "instance": 389001,
+    "name": "BACnet MCP SC Gateway",
+    "vendor_id": 999,
+    "description": "Agentic MCP gateway for BACnet/SC networks"
+  },
+  "transports": {
+    "sc": {
+      "hub_uri": "wss://hub.example.com:8443",
+      "cert": "/etc/bacnet-mcp/certs/node.pem",
+      "key": "/etc/bacnet-mcp/certs/node.key",
+      "ca": "/etc/bacnet-mcp/certs/ca.pem",
+      "client_vmac": "02:00:00:00:00:01",
+      "server_vmac": "02:00:00:00:00:02",
+      "network_number": 2
+    }
+  },
+  "objects": [
+    {
+      "type": "analog-value",
+      "instance": 1,
+      "name": "Gateway Uptime",
+      "units": "seconds"
+    }
+  ]
+}

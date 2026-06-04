@@ -242,8 +242,9 @@ fn render_status(
     lines.push(Line::raw(""));
 
     lines.push(Line::from(Span::styled("Transports", theme::HEADER_TITLE)));
+    let active_transport = gateway.client().map(|client| client.transport_name());
     if let Some(bip) = &config.transports.bip {
-        let badge = if gateway.client().is_some() {
+        let badge = if active_transport == Some("bip") {
             Span::styled(" UP ", theme::OK)
         } else {
             Span::styled(" DOWN ", theme::ERR)
@@ -263,20 +264,20 @@ fn render_status(
         )));
     }
     if let Some(sc) = &config.transports.sc {
-        let role = match (sc.listen.as_deref(), sc.hub_uri.as_deref()) {
-            (Some(addr), _) => format!("Hub @ {addr}"),
-            (_, Some(uri)) => format!("Node → {uri}"),
-            _ => "(unconfigured)".into(),
+        let badge = if active_transport == Some("sc") {
+            Span::styled(" UP ", theme::OK)
+        } else {
+            Span::styled(" DOWN ", theme::ERR)
         };
         lines.push(Line::from(vec![
             Span::raw("  SC  "),
-            Span::styled(" PEND ", theme::WARN),
-            Span::raw(format!("  {role} net {}", sc.network_number)),
+            badge,
+            Span::raw(format!(
+                "  node {} net {}",
+                sc.hub_uri.as_deref().unwrap_or("<missing hub>"),
+                sc.network_number
+            )),
         ]));
-        lines.push(Line::from(Span::styled(
-            "       (wiring lands in Phase 4)",
-            theme::DIM,
-        )));
     } else {
         lines.push(Line::from(Span::styled(
             "  SC  — not configured",

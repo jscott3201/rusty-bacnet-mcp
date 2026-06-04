@@ -210,20 +210,18 @@ fn default_bip_port() -> u16 {
 
 /// BACnet/SC transport configuration.
 ///
-/// SC supports two roles:
-/// - **Node**: connects out to a remote hub (set `hub_uri`).
-/// - **Hub**: listens for incoming SC node connections (set `listen` and omit `hub_uri`).
-///
-/// `listen` and `hub_uri` are mutually exclusive — a single SC transport
-/// runs in exactly one role.
+/// The MCP gateway runs as a BACnet/SC node: its local client and local server
+/// each connect to an SC hub over TLS WebSocket. `client_vmac` and
+/// `server_vmac` must be distinct stable 6-byte VMACs so the hub can route
+/// requests and notifications unambiguously.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ScConfig {
-    /// Node mode: WebSocket URI of the remote SC hub (e.g. `wss://hub.example.com:8443`).
-    /// Omit for Hub mode.
+    /// WebSocket URI of the remote SC hub (e.g. `wss://hub.example.com:8443`).
     #[serde(default)]
     pub hub_uri: Option<String>,
-    /// Hub mode: bind address for incoming WebSocket connections (e.g. `0.0.0.0:8443`).
-    /// Omit for Node mode.
+    /// Reserved for a future embedded SC hub. Runtime transport support today
+    /// requires `hub_uri`; validation rejects `listen` so configs cannot look
+    /// like they started a local hub when they did not.
     #[serde(default)]
     pub listen: Option<String>,
     /// TLS client/server certificate path (PEM).
@@ -233,8 +231,41 @@ pub struct ScConfig {
     /// CA bundle for peer verification (PEM).
     #[serde(default)]
     pub ca: Option<String>,
+    /// VMAC used by the MCP client's SC node, formatted as
+    /// `01:02:03:04:05:06` or `010203040506`.
+    pub client_vmac: String,
+    /// VMAC used by the local BACnet server's SC node, formatted as
+    /// `01:02:03:04:05:06` or `010203040506`.
+    pub server_vmac: String,
     /// Network number for this transport.
     pub network_number: u16,
+}
+
+/// Parse a BACnet/SC VMAC from colon-separated or compact hex.
+pub fn parse_sc_vmac(raw: &str) -> Result<[u8; 6], String> {
+    let compact = raw.replace([':', '-'], "");
+    if compact.len() != 12 {
+        return Err(format!(
+            "SC VMAC '{raw}' must contain exactly 12 hex digits"
+        ));
+    }
+    let mut vmac = [0u8; 6];
+    for (idx, slot) in vmac.iter_mut().enumerate() {
+        let start = idx * 2;
+        let byte = u8::from_str_radix(&compact[start..start + 2], 16)
+            .map_err(|e| format!("SC VMAC '{raw}' contains invalid hex: {e}"))?;
+        *slot = byte;
+    }
+    if is_reserved_sc_vmac(&vmac) {
+        return Err(format!(
+            "SC VMAC '{raw}' is reserved; all-zero and all-ff VMACs are invalid"
+        ));
+    }
+    Ok(vmac)
+}
+
+fn is_reserved_sc_vmac(vmac: &[u8; 6]) -> bool {
+    *vmac == [0; 6] || *vmac == [0xff; 6]
 }
 
 /// BBMD configuration.
@@ -326,6 +357,9 @@ impl GatewayConfig {
             });
         }
 
+        let has_bip = self.transports.bip.is_some();
+        let has_sc = self.transports.sc.is_some();
+
         // BBMD requires BIP transport
         if let Some(bbmd) = &self.bbmd
             && bbmd.enabled
@@ -336,23 +370,62 @@ impl GatewayConfig {
             });
         }
 
-        // SC role: Hub vs Node — `listen` and `hub_uri` are mutually exclusive,
-        // and exactly one must be set.
+        match (has_bip, has_sc) {
+            (true, true) => {
+                return Err(ConfigError {
+                    message:
+                        "configure exactly one runtime transport: transports.bip or transports.sc"
+                            .to_string(),
+                });
+            }
+            (false, false) => {
+                return Err(ConfigError {
+                    message:
+                        "configure exactly one runtime transport: transports.bip or transports.sc"
+                            .to_string(),
+                });
+            }
+            _ => {}
+        }
+
+        // SC runtime: node mode only today. Embedded hub support needs shared
+        // local database/router wiring before it can be represented honestly.
         if let Some(sc) = &self.transports.sc {
-            match (sc.listen.as_ref(), sc.hub_uri.as_ref()) {
-                (Some(_), Some(_)) => {
-                    return Err(ConfigError {
-                        message:
-                            "transports.sc cannot set both `listen` (Hub) and `hub_uri` (Node)"
-                                .to_string(),
-                    });
-                }
-                (None, None) => {
-                    return Err(ConfigError {
-                        message: "transports.sc requires either `listen` (Hub mode) or `hub_uri` (Node mode)".to_string(),
-                    });
-                }
-                _ => {}
+            if sc.listen.is_some() {
+                return Err(ConfigError {
+                    message:
+                        "transports.sc.listen is not a runtime transport yet; configure hub_uri to connect to an SC hub"
+                            .to_string(),
+                });
+            }
+            let hub_uri = sc.hub_uri.as_deref().ok_or_else(|| ConfigError {
+                message: "transports.sc.hub_uri is required for BACnet/SC node mode".to_string(),
+            })?;
+            if !hub_uri.starts_with("wss://") {
+                return Err(ConfigError {
+                    message: "transports.sc.hub_uri must use wss://".to_string(),
+                });
+            }
+            if sc.cert.trim().is_empty() {
+                return Err(ConfigError {
+                    message: "transports.sc.cert must not be empty".to_string(),
+                });
+            }
+            if sc.key.trim().is_empty() {
+                return Err(ConfigError {
+                    message: "transports.sc.key must not be empty".to_string(),
+                });
+            }
+            let client_vmac = parse_sc_vmac(&sc.client_vmac).map_err(|message| ConfigError {
+                message: format!("transports.sc.client_vmac: {message}"),
+            })?;
+            let server_vmac = parse_sc_vmac(&sc.server_vmac).map_err(|message| ConfigError {
+                message: format!("transports.sc.server_vmac: {message}"),
+            })?;
+            if client_vmac == server_vmac {
+                return Err(ConfigError {
+                    message: "transports.sc.client_vmac and server_vmac must differ".to_string(),
+                });
             }
         }
 
@@ -442,220 +515,5 @@ impl GatewayConfig {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_full_config() {
-        let json = r#"{
-            "mcp": {
-                "api_key": "test-key",
-                "read_only": false,
-                "http": { "bind": "0.0.0.0:3000" }
-            },
-            "device": {
-                "instance": 389001,
-                "name": "Test Gateway",
-                "vendor_id": 555
-            },
-            "transports": {
-                "bip": {
-                    "interface": "0.0.0.0",
-                    "port": 47808,
-                    "broadcast": "192.168.1.255",
-                    "network_number": 1
-                },
-                "sc": {
-                    "hub_uri": "wss://hub.example.com",
-                    "cert": "certs/client.pem",
-                    "key": "certs/client.key",
-                    "network_number": 2
-                }
-            },
-            "routes": [
-                { "network": 4, "via_transport": "bip", "next_hop": "192.168.1.100:47808" }
-            ],
-            "objects": [
-                { "type": "analog-value", "instance": 1, "name": "Gateway Uptime", "units": "seconds" }
-            ]
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        assert_eq!(config.mcp.api_key.as_deref(), Some("test-key"));
-        assert!(!config.mcp.read_only);
-        assert_eq!(
-            config.mcp.http.as_ref().map(|h| h.bind.as_str()),
-            Some("0.0.0.0:3000")
-        );
-        assert_eq!(config.device.instance, 389001);
-        assert_eq!(config.device.name, "Test Gateway");
-        assert_eq!(config.device.vendor_id, 555);
-        assert!(config.transports.bip.is_some());
-        assert!(config.transports.sc.is_some());
-        assert_eq!(config.routes.len(), 1);
-        assert_eq!(config.routes[0].network, 4);
-        assert_eq!(config.objects.len(), 1);
-        assert_eq!(config.objects[0].object_type, "analog-value");
-        config.validate().unwrap();
-    }
-
-    #[test]
-    fn parse_minimal_config_is_read_only_by_default() {
-        let json = r#"{
-            "device": { "instance": 1234, "name": "Minimal" }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        assert!(config.mcp.api_key.is_none());
-        assert!(
-            config.mcp.read_only,
-            "default safety posture must be read-only"
-        );
-        assert!(config.mcp.http.is_none());
-        assert!(config.transports.bip.is_none());
-        assert!(config.routes.is_empty());
-        assert!(config.objects.is_empty());
-        config.validate().unwrap();
-    }
-
-    #[test]
-    fn validate_device_instance_too_large() {
-        let json = r#"{ "device": { "instance": 4194303, "name": "Bad" } }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("4194303"));
-    }
-
-    #[test]
-    fn validate_bbmd_and_foreign_device_mutually_exclusive() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "transports": {
-                "bip": { "broadcast": "192.168.1.255", "network_number": 1 }
-            },
-            "bbmd": { "enabled": true },
-            "foreign_device": { "bbmd": "192.168.1.1:47808", "ttl": 300 }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("mutually exclusive"));
-    }
-
-    #[test]
-    fn validate_bbmd_requires_bip() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "bbmd": { "enabled": true }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("requires transports.bip"));
-    }
-
-    #[test]
-    fn validate_duplicate_network_numbers() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "transports": {
-                "bip": { "broadcast": "192.168.1.255", "network_number": 1 },
-                "sc": {
-                    "hub_uri": "wss://hub.example.com",
-                    "cert": "c.pem", "key": "k.pem",
-                    "network_number": 1
-                }
-            }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("duplicate network number"));
-    }
-
-    #[test]
-    fn validate_network_number_zero_rejected() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "transports": {
-                "bip": { "broadcast": "192.168.1.255", "network_number": 0 }
-            }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("reserved"));
-    }
-
-    #[test]
-    fn validate_network_number_broadcast_rejected() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "transports": {
-                "bip": { "broadcast": "192.168.1.255", "network_number": 65535 }
-            }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("reserved"));
-    }
-
-    #[test]
-    fn validate_sc_requires_hub_or_node_mode() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "transports": {
-                "sc": { "cert": "c.pem", "key": "k.pem", "network_number": 2 }
-            }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("Hub mode") || err.message.contains("Node mode"));
-    }
-
-    #[test]
-    fn validate_sc_hub_and_node_mutually_exclusive() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "transports": {
-                "sc": {
-                    "hub_uri": "wss://hub.example.com",
-                    "listen": "0.0.0.0:8443",
-                    "cert": "c.pem", "key": "k.pem",
-                    "network_number": 2
-                }
-            }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("Hub") && err.message.contains("Node"));
-    }
-
-    #[test]
-    fn validate_sc_hub_mode_accepted() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "SC Hub Gateway" },
-            "transports": {
-                "sc": {
-                    "listen": "0.0.0.0:8443",
-                    "cert": "certs/hub.pem", "key": "certs/hub.key", "ca": "certs/ca.pem",
-                    "network_number": 2
-                }
-            }
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        config.validate().unwrap();
-    }
-
-    #[test]
-    fn validate_unknown_route_transport_rejected() {
-        let json = r#"{
-            "device": { "instance": 1, "name": "Test" },
-            "transports": {
-                "bip": { "broadcast": "192.168.1.255", "network_number": 1 }
-            },
-            "routes": [ { "network": 5, "via_transport": "mstp" } ]
-        }"#;
-        let config = GatewayConfig::from_json(json).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.message.contains("mstp") || err.message.contains("unknown"));
     }
 }

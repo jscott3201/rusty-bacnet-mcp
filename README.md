@@ -22,7 +22,7 @@ Version 0.2.0 dropped the legacy HTTP REST API and MS/TP transport to focus the 
 Coming next:
 - Phase 2 — feature expansion (RPM, priority array, trends, alarms, schedules, layered safety)
 - Phase 3 — `bacnet-mcp-tui` operator console (ratatui)
-- Phase 4 — BACnet/SC Hub + Node transport wiring
+- Phase 4 — embedded BACnet/SC hub/router composition
 
 ## Install
 
@@ -43,8 +43,8 @@ cargo install --git https://github.com/jscott3201/rusty-bacnet-mcp bacnet-mcp --
 
 ## Docker
 
-Build the deployment image with BACnet/IP plus the BACnet/SC TLS dependency
-set compiled in:
+Build the deployment image with BACnet/IP and BACnet/SC runtime support
+compiled in:
 
 ```bash
 scripts/docker-build.sh
@@ -62,9 +62,9 @@ compiles with `bin,sc`. The Alpine target runs as `bacnet`; the distroless
 target runs as non-root UID/GID `65532:65532`.
 
 Both runtime targets include a CA bundle for TLS, expose MCP HTTP on
-`3000/tcp`, BACnet/IP on `47808/udp`, and reserve `8443/tcp` for BACnet/SC hub
-traffic. The default container config is B/IP-only, read-only, and binds MCP
-HTTP to `0.0.0.0:3000`.
+`3000/tcp`, BACnet/IP on `47808/udp`, and reserve `8443/tcp` for future
+embedded BACnet/SC hub work. The default container config is B/IP-only,
+read-only, and binds MCP HTTP to `0.0.0.0:3000`.
 
 For BACnet/IP broadcast discovery, host networking is usually the least
 surprising container mode:
@@ -201,6 +201,31 @@ Local objects: list_local_objects, read_local_property, write_local_property,
 ```
 
 Full schema: see [src/config.rs](src/config.rs). Starter file: [examples/bacnet-mcp.json](examples/bacnet-mcp.json).
+
+Configure exactly one BACnet runtime transport. For BACnet/SC node mode, build
+with `--features bin,sc` and provide a hub URI, client certificate material,
+and distinct stable VMACs:
+
+```json
+{
+  "device": {
+    "instance": 389001,
+    "name": "BACnet MCP SC Gateway",
+    "vendor_id": 999
+  },
+  "transports": {
+    "sc": {
+      "hub_uri": "wss://hub.example.com:8443",
+      "cert": "/etc/bacnet-mcp/certs/node.pem",
+      "key": "/etc/bacnet-mcp/certs/node.key",
+      "ca": "/etc/bacnet-mcp/certs/ca.pem",
+      "client_vmac": "02:00:00:00:00:01",
+      "server_vmac": "02:00:00:00:00:02",
+      "network_number": 2
+    }
+  }
+}
+```
 
 ## CLI
 

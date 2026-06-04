@@ -383,10 +383,8 @@ fn status_text(state: &GatewayState, config: &GatewayConfig, http_listening: boo
         .sc
         .as_ref()
         .map(|s| {
-            format!(
-                "SC configured net {} (runtime wiring pending)",
-                s.network_number
-            )
+            let hub = s.hub_uri.as_deref().unwrap_or("<missing hub>");
+            format!("SC node {hub} net {}", s.network_number)
         })
         .unwrap_or_else(|| "SC not configured".to_string());
     let http = match (http_listening, &config.mcp.http) {

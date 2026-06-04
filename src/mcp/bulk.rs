@@ -397,7 +397,7 @@ pub async fn enumerate_objects_impl(
 /// segmentation support, encode error) falls back to indexed reads — `[0]`
 /// returns the array length, then `[1..=count]` are read in chunks.
 async fn read_object_list(
-    client: &bacnet_client::client::BACnetClient<bacnet_transport::bip::BipTransport>,
+    client: &crate::runtime::GatewayClient,
     mac: &[u8],
     device_oid: ObjectIdentifier,
     limit: u32,
