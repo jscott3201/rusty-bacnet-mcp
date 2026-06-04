@@ -100,11 +100,12 @@ Default workflow:
   1. discover_devices or register_device.
   2. get_device_capabilities before broad reads on an unknown device.
   3. enumerate_objects to discover object identifiers; set include_names for labels.
-  4. read_property_multiple for compact snapshots; read_property for one-off scalar reads.
+  4. read_property_multiple for compact snapshots; read_property for one-off compact reads.
   5. Use write tools only after reading state and checking policy/audit posture.
 
 Token-efficient usage:
   - Prefer read_property_multiple over many read_property calls; it defaults to compact output.
+  - read_property also defaults to compact output; set response_mode=detailed for full decoded arrays/strings.
   - Prefer read_point_summary for compact value/health snapshots of known points.
   - Prefer read_file_chunk for bounded File object reads; page with next_start/next_record.
   - Prefer read_schedule before schedule array reads so you know the target refs.
@@ -121,7 +122,7 @@ Tool families:
     get_device_info reads common Device object identity fields.
 
   remote reads:
-    read_property reads one property from one object.
+    read_property reads one compact property from one object; set response_mode=detailed for full decoded values.
     read_property_multiple reads many object/property pairs in one RPM request; set response_mode=detailed only when raw decoded values are needed.
     read_point_summary returns one compact value/health line per selected point.
     read_file_chunk reads a bounded File object stream or record chunk.

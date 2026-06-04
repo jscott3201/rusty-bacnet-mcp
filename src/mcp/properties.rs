@@ -18,6 +18,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::primitives::ObjectIdentifier;
 
+use super::value_format::compact_json_value;
 use crate::audit::AuditEntry;
 use crate::parse::{
     decode_raw_property_to_json_with_context, object_type_name, parse_object_type,
@@ -46,6 +47,19 @@ pub struct ReadPropertyParams {
     /// Array index for array properties (optional).
     #[schemars(description = "Array index for array properties (optional)")]
     pub array_index: Option<u32>,
+    /// Compact is the default to prevent large arrays/strings from dominating
+    /// model context. Detailed preserves the previous full decoded value.
+    #[schemars(description = "Response shape: compact (default) or detailed")]
+    #[serde(default)]
+    pub response_mode: ReadPropertyResponseMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadPropertyResponseMode {
+    #[default]
+    Compact,
+    Detailed,
 }
 
 /// Parameters for write_property tool.
@@ -294,10 +308,7 @@ pub async fn read_property_impl(
     {
         Ok(ack) => {
             let val = decode_raw_property_to_json_with_context(&ack.property_value, property);
-            let display = match val.get("value") {
-                Some(v) => format!("{v}"),
-                None => format!("{val}"),
-            };
+            let display = format_read_property_value(&val, params.response_mode);
             Ok(format!(
                 "{}:{} {} = {}",
                 object_type_name(obj_type),
@@ -307,6 +318,19 @@ pub async fn read_property_impl(
             ))
         }
         Err(e) => Err(format!("Error reading property: {e}")),
+    }
+}
+
+fn format_read_property_value(
+    decoded: &serde_json::Value,
+    mode: ReadPropertyResponseMode,
+) -> String {
+    match mode {
+        ReadPropertyResponseMode::Compact => compact_json_value(decoded),
+        ReadPropertyResponseMode::Detailed => match decoded.get("value") {
+            Some(v) => format!("{v}"),
+            None => format!("{decoded}"),
+        },
     }
 }
 
@@ -726,4 +750,68 @@ fn prepare_wpm_batch(
         object_count: params.objects.len(),
         property_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_property_params_default_to_compact_response() {
+        let params: ReadPropertyParams = serde_json::from_value(serde_json::json!({
+            "device_instance": 1234,
+            "object_type": "analog-input",
+            "object_instance": 1,
+            "property": "present-value",
+            "array_index": null
+        }))
+        .unwrap();
+        assert_eq!(params.response_mode, ReadPropertyResponseMode::Compact);
+    }
+
+    #[test]
+    fn read_property_params_accept_detailed_response() {
+        let params: ReadPropertyParams = serde_json::from_value(serde_json::json!({
+            "device_instance": 1234,
+            "object_type": "device",
+            "object_instance": 1234,
+            "property": "object-list",
+            "array_index": null,
+            "response_mode": "detailed"
+        }))
+        .unwrap();
+        assert_eq!(params.response_mode, ReadPropertyResponseMode::Detailed);
+    }
+
+    #[test]
+    fn read_property_compact_mode_summarizes_list_values() {
+        let decoded = serde_json::json!({
+            "type": "list",
+            "value": [
+                {"type": "object-identifier", "value": "analog-input:1"},
+                {"type": "object-identifier", "value": "analog-input:2"},
+                {"type": "object-identifier", "value": "analog-input:3"},
+                {"type": "object-identifier", "value": "analog-input:4"},
+                {"type": "object-identifier", "value": "analog-input:5"}
+            ]
+        });
+        let rendered = format_read_property_value(&decoded, ReadPropertyResponseMode::Compact);
+        assert_eq!(
+            rendered,
+            "list[5](analog-input:1,analog-input:2,analog-input:3,analog-input:4,+1 more)"
+        );
+    }
+
+    #[test]
+    fn read_property_detailed_mode_preserves_full_value_shape() {
+        let decoded = serde_json::json!({
+            "type": "list",
+            "value": [
+                {"type": "unsigned", "value": 1},
+                {"type": "unsigned", "value": 2}
+            ]
+        });
+        let rendered = format_read_property_value(&decoded, ReadPropertyResponseMode::Detailed);
+        assert_eq!(rendered, decoded["value"].to_string());
+    }
 }
