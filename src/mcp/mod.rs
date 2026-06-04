@@ -7,6 +7,7 @@ pub mod bulk;
 pub mod cov;
 pub mod diagnostics;
 pub mod discovery;
+pub mod files;
 pub mod objects;
 pub mod points;
 pub mod properties;
@@ -131,6 +132,14 @@ impl GatewayMcp {
         params: Parameters<points::ReadPointSummaryParams>,
     ) -> Result<String, String> {
         points::read_point_summary_impl(&self.state, params.0).await
+    }
+
+    #[tool(description = "Read a bounded chunk from a remote File object.")]
+    async fn read_file_chunk(
+        &self,
+        params: Parameters<files::ReadFileChunkParams>,
+    ) -> Result<String, String> {
+        files::read_file_chunk_impl(&self.state, params.0).await
     }
 
     #[tool(

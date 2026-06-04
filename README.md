@@ -92,7 +92,7 @@ bacnet-mcp --config bacnet-mcp.json --transport both --bind 127.0.0.1:3000
 ```
 Discovery: register_device, discover_devices, list_known_devices, get_device_info
 Remote reads: read_property, read_property_multiple, read_point_summary, read_priority_array,
-  enumerate_objects, get_device_capabilities
+  read_file_chunk, enumerate_objects, get_device_capabilities
 Remote writes: write_property, write_property_multiple, relinquish_at_priority
 Alarms/events: get_alarm_summary, get_event_information, acknowledge_alarm
 COV: subscribe_cov, unsubscribe_cov, poll_cov_notifications
