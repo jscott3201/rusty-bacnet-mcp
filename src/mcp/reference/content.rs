@@ -106,6 +106,7 @@ Default workflow:
 Token-efficient usage:
   - Prefer read_property_multiple over many read_property calls.
   - Prefer read_point_summary for compact value/health snapshots of known points.
+  - Prefer read_file_chunk for bounded File object reads; page with next_start/next_record.
   - Prefer read_schedule before schedule array reads so you know the target refs.
   - Prefer get_trend_log_info before read_trend_log so you can choose a bounded range.
   - Prefer write_property_multiple for coordinated batch writes after dry-run.
@@ -123,6 +124,7 @@ Tool families:
     read_property reads one property from one object.
     read_property_multiple reads many object/property pairs in one RPM request.
     read_point_summary returns one compact value/health line per selected point.
+    read_file_chunk reads a bounded File object stream or record chunk.
     read_priority_array reads present-value, priority-array, and relinquish-default.
     enumerate_objects groups Device.object-list; include_names fetches labels.
     get_device_capabilities reads vendor/protocol/service capability fields.
