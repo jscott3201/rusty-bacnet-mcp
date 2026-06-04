@@ -41,6 +41,54 @@ Or via `cargo install --git`:
 cargo install --git https://github.com/jscott3201/rusty-bacnet-mcp bacnet-mcp --features bin
 ```
 
+## Docker
+
+Build the deployment image with BACnet/IP plus the BACnet/SC TLS dependency
+set compiled in:
+
+```bash
+scripts/docker-build.sh
+# or override:
+BACNET_MCP_DOCKER_TAG=bacnet-mcp:dev \
+BACNET_MCP_DOCKER_TARGET=runtime \
+BACNET_MCP_DOCKER_FEATURES=bin,sc \
+  scripts/docker-build.sh
+```
+
+The Dockerfile follows the same shape as the other Rust protocol drivers:
+Alpine musl builder, Alpine runtime target, and distroless static runtime
+target. `scripts/docker-build.sh` defaults to the `distroless` target and
+compiles with `bin,sc`. The Alpine target runs as `bacnet`; the distroless
+target runs as non-root UID/GID `65532:65532`.
+
+Both runtime targets include a CA bundle for TLS, expose MCP HTTP on
+`3000/tcp`, BACnet/IP on `47808/udp`, and reserve `8443/tcp` for BACnet/SC hub
+traffic. The default container config is B/IP-only, read-only, and binds MCP
+HTTP to `0.0.0.0:3000`.
+
+For BACnet/IP broadcast discovery, host networking is usually the least
+surprising container mode:
+
+```bash
+docker run --rm --network host \
+  -v "$PWD/examples/bacnet-mcp.container.json:/etc/bacnet-mcp/bacnet-mcp.json:ro" \
+  bacnet-mcp:local
+```
+
+For routed/unicast deployments, explicit port publishing can work:
+
+```bash
+docker run --rm \
+  -p 3000:3000/tcp \
+  -p 47808:47808/udp \
+  -v "$PWD/examples/bacnet-mcp.container.json:/etc/bacnet-mcp/bacnet-mcp.json:ro" \
+  bacnet-mcp:local
+```
+
+`scripts/docker-ci.sh` builds and smokes both runtime targets. `scripts/docker-smoke.sh`
+verifies the binary/config entry points and checks the runtime user contract
+for the selected target.
+
 ## Quick Start
 
 Copy the starter config:

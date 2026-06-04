@@ -1,0 +1,30 @@
+{
+  "mcp": {
+    "read_only": true,
+    "http": {
+      "bind": "0.0.0.0:3000"
+    }
+  },
+  "device": {
+    "instance": 389001,
+    "name": "BACnet MCP Container",
+    "vendor_id": 999,
+    "description": "Containerized MCP gateway for BACnet networks"
+  },
+  "transports": {
+    "bip": {
+      "interface": "0.0.0.0",
+      "port": 47808,
+      "broadcast": "255.255.255.255",
+      "network_number": 1
+    }
+  },
+  "objects": [
+    {
+      "type": "analog-value",
+      "instance": 1,
+      "name": "Gateway Uptime",
+      "units": "seconds"
+    }
+  ]
+}

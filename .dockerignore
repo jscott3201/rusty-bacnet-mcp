@@ -1,0 +1,11 @@
+.DS_Store
+.git
+.github
+_briefs
+_design
+_goalslogs
+_review
+_spec
+target
+*.log
+*.tmp
