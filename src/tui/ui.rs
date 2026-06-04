@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
 
 use crate::tui::app::App;
 use crate::tui::event::StatusKind;
-use crate::tui::tabs::{Tab, configure, observe, operate};
+use crate::tui::tabs::{Tab, configure, observe, operate, shell};
 use crate::tui::theme;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -89,6 +89,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
             true,
         ),
         Tab::Operate => operate::render(frame, area, &app.operate, true),
+        Tab::Shell => shell::render(frame, area, &app.shell, true),
     }
 }
 
@@ -110,12 +111,17 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 v.push(("↑↓", "field"));
                 v.push(("Enter", "run"));
             }
+            Tab::Shell => {
+                v.push(("Enter", "run"));
+                v.push(("↑↓", "history"));
+                v.push(("Esc", "clear"));
+            }
         }
         v.push(("F1", "help"));
         v.push(("Ctrl-M", "mouse"));
         // In Configure tab, `q` is text input for the editor. Surface the
         // global quit shortcut (Ctrl-C) instead so the hint is honest.
-        v.push(if app.tab == Tab::Configure {
+        v.push(if matches!(app.tab, Tab::Configure | Tab::Shell) {
             ("Ctrl-C", "quit")
         } else {
             ("q", "quit")
@@ -163,12 +169,17 @@ fn render_help_popup(frame: &mut Frame) {
         Line::raw("  1/2/3              switch form (WhoIs / Read / Write)"),
         Line::raw("  ↑/↓                field navigation"),
         Line::raw("  Enter              run the form"),
+        Line::raw(""),
+        Line::from(Span::styled("Shell", theme::HEADER_TITLE)),
+        Line::raw("  Enter              run command"),
+        Line::raw("  ↑/↓                command history"),
+        Line::raw("  Esc                clear prompt"),
     ];
     // Centered popup: 60% wide × 75% tall, capped to a sensible max.
     let area = frame.area();
     let popup_area = centered_rect(
         60.min((area.width as u32).saturating_sub(4) as u16),
-        22,
+        28,
         area,
     );
     frame.render_widget(Clear, popup_area);

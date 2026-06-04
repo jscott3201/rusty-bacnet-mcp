@@ -133,6 +133,23 @@ Endpoint: `http://127.0.0.1:3000/mcp`. Set `mcp.api_key` in the config (or `--ap
 bacnet-mcp --config bacnet-mcp.json --transport both --bind 127.0.0.1:3000
 ```
 
+### Operator TUI
+
+```bash
+bacnet-mcp --mode tui --config bacnet-mcp.json
+```
+
+TUI mode owns the terminal, so stdio MCP is disabled. If the config has an
+HTTP MCP listener, it can run alongside the operator console. The Shell tab is
+a read-oriented command REPL for quick checks:
+
+```text
+status
+devices
+whois [low] [high] [timeout_seconds]
+read <device> <object-type> <object-instance> <property>
+```
+
 ## MCP Surface
 
 **Tools** include:

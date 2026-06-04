@@ -41,6 +41,7 @@ use crate::tui::app::{Action, App};
 use crate::tui::event::{AppSender, Event, StatusKind};
 use crate::tui::tabs::Tab;
 use crate::tui::tabs::operate::OpForm;
+use crate::tui::tabs::shell::{execute_shell_command, parse_shell_command};
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -291,7 +292,33 @@ async fn execute_action(app: &mut App, action: Action, state: &GatewayState, _se
         Action::RunOperate => {
             run_operate(app, state).await;
         }
+        Action::RunShellCommand => {
+            run_shell_command(app, state).await;
+        }
     }
+}
+
+async fn run_shell_command(app: &mut App, state: &GatewayState) {
+    let Some(raw_command) = app.shell.take_command() else {
+        return;
+    };
+    let result = match parse_shell_command(&raw_command) {
+        Ok(Some(command)) => {
+            execute_shell_command(command, state, &app.config, app.http_listening).await
+        }
+        Ok(None) => return,
+        Err(e) => Err(e),
+    };
+    let toast = match &result {
+        Ok(_) => Some((
+            std::time::Instant::now(),
+            StatusKind::Ok,
+            "Shell command OK".into(),
+        )),
+        Err(e) => Some((std::time::Instant::now(), StatusKind::Err, e.clone())),
+    };
+    app.shell.record_result(raw_command, result);
+    app.toast = toast;
 }
 
 async fn run_operate(app: &mut App, state: &GatewayState) {
