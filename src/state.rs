@@ -222,12 +222,9 @@ impl GatewayState {
     /// Manually register a device in the client's device table.
     pub async fn add_device_manual(&self, instance: u32, address: &str) -> Result<(), String> {
         let client = self.require_client()?;
-        let addr: std::net::SocketAddrV4 = address
-            .parse()
-            .map_err(|e| format!("invalid address '{address}': {e}"))?;
-        let mac = crate::parse::socket_addr_to_mac(addr);
+        let mac = client.parse_manual_address(address)?;
         client
-            .add_bip_device(instance, &mac)
+            .add_device(instance, &mac)
             .await
             .map_err(|e| format!("{e}"))
     }

@@ -169,6 +169,10 @@ Local objects: list_local_objects, read_local_property, write_local_property,
   create_local_object, delete_local_object
 ```
 
+`register_device` and directed `discover_devices` targets use the active BACnet
+transport address format: `ip:port` for B/IP, or a 6-byte VMAC such as
+`02:00:00:00:00:10` for BACnet/SC.
+
 **Resources**:
 
 - `bacnet://reference/{object-types,properties,units,errors,reliability,priority-array,networking,services,troubleshooting}` — compiled-in reference text.

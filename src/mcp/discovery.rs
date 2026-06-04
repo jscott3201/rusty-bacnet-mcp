@@ -21,10 +21,11 @@ pub struct DiscoverParams {
     /// How long to wait for responses in seconds (default: 3, max: 30).
     #[schemars(description = "Seconds to wait for IAm responses (default: 3, max: 30)")]
     pub timeout_seconds: Option<u64>,
-    /// Target address for unicast discovery (e.g., "192.168.1.100:47808").
-    /// If omitted, sends a broadcast WhoIs.
+    /// Target address for unicast discovery on the active transport. B/IP
+    /// expects `ip:port`; BACnet/SC expects a 6-byte VMAC. If omitted, sends a
+    /// global WhoIs on the active transport.
     #[schemars(
-        description = "Target address for unicast WhoIs (e.g., '192.168.1.100:47808'). Omit for broadcast."
+        description = "Target address for directed WhoIs: B/IP ip:port or BACnet/SC VMAC. Omit for global WhoIs."
     )]
     pub target: Option<String>,
 }
@@ -45,8 +46,9 @@ pub struct RegisterDeviceParams {
     /// Device instance number.
     #[schemars(description = "Device instance number")]
     pub device_instance: u32,
-    /// Device address as ip:port (e.g., "192.168.1.100:47808").
-    #[schemars(description = "Device address as ip:port (e.g., '192.168.1.100:47808')")]
+    /// Device address on the active transport. B/IP expects `ip:port`;
+    /// BACnet/SC expects a 6-byte VMAC.
+    #[schemars(description = "Device address: B/IP ip:port or BACnet/SC VMAC")]
     pub address: String,
 }
 
@@ -80,10 +82,7 @@ pub async fn discover_devices_impl(
 
     match &params.target {
         Some(target) => {
-            let addr: std::net::SocketAddrV4 = target
-                .parse()
-                .map_err(|e| format!("invalid target address '{target}': {e}"))?;
-            let mac = crate::parse::socket_addr_to_mac(addr);
+            let mac = client.parse_manual_address(target)?;
             if let Err(e) = client
                 .who_is_directed(&mac, params.low_instance, params.high_instance)
                 .await

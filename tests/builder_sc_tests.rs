@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bacnet_mcp::builder::GatewayBuilder;
 use bacnet_mcp::config::GatewayConfig;
+#[cfg(feature = "mcp")]
+use bacnet_mcp::mcp::discovery;
 use bacnet_transport::sc_frame::Vmac;
 use bacnet_transport::sc_hub::ScHub;
 use rcgen::{CertificateParams, Issuer, KeyPair, SanType};
@@ -15,6 +17,8 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls;
 use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+static SC_HUB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn sc_runtime_build_requires_readable_client_certificate() {
@@ -34,10 +38,90 @@ async fn sc_runtime_build_requires_readable_client_certificate() {
 
 #[tokio::test]
 async fn sc_runtime_connects_server_and_client_nodes_to_local_hub() {
+    let _guard = SC_HUB_TEST_LOCK.lock().await;
     let certs = generate_test_certs();
     let cert_dir = TempCertDir::new(&certs);
     let (mut hub, hub_uri) = start_sc_hub_mtls(&certs, [0x02, 0, 0, 0, 0, 0xff]).await;
 
+    let built = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        build_sc_gateway(&hub_uri, &cert_dir),
+    )
+    .await
+    .expect("SC gateway build should not hang")
+    .expect("SC gateway should connect to local hub");
+
+    assert_eq!(built.server_mac, [0x02, 0, 0, 0, 0, 0x02]);
+    assert_eq!(
+        built.state.require_client().unwrap().transport_name(),
+        "sc",
+        "GatewayState should expose the SC client runtime"
+    );
+
+    drop(built);
+    hub.stop().await;
+}
+
+#[tokio::test]
+#[cfg(feature = "mcp")]
+async fn sc_register_device_accepts_vmac_and_rejects_bip_socket_address() {
+    let _guard = SC_HUB_TEST_LOCK.lock().await;
+    let certs = generate_test_certs();
+    let cert_dir = TempCertDir::new(&certs);
+    let (mut hub, hub_uri) = start_sc_hub_mtls(&certs, [0x02, 0, 0, 0, 0, 0xff]).await;
+    let built = build_sc_gateway(&hub_uri, &cert_dir)
+        .await
+        .expect("SC gateway should connect to local hub");
+
+    let result = discovery::register_device_impl(
+        &built.state,
+        discovery::RegisterDeviceParams {
+            device_instance: 389_099,
+            address: "02:00:00:00:00:42".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(result.contains("Registered device 389099"));
+
+    let devices = discovery::list_known_devices_impl(&built.state)
+        .await
+        .unwrap();
+    assert!(devices.contains("Instance 389099"), "got: {devices}");
+    assert!(devices.contains("02, 00, 00, 00, 00, 42"), "got: {devices}");
+
+    let err = discovery::register_device_impl(
+        &built.state,
+        discovery::RegisterDeviceParams {
+            device_instance: 389_100,
+            address: "127.0.0.1:47808".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("invalid BACnet/SC VMAC address"), "got: {err}");
+
+    let err = discovery::discover_devices_impl(
+        &built.state,
+        discovery::DiscoverParams {
+            low_instance: None,
+            high_instance: None,
+            timeout_seconds: Some(0),
+            target: Some("127.0.0.1:47808".into()),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("invalid BACnet/SC VMAC address"), "got: {err}");
+
+    drop(built);
+    hub.stop().await;
+}
+
+async fn build_sc_gateway(
+    hub_uri: &str,
+    cert_dir: &TempCertDir,
+) -> Result<bacnet_mcp::builder::BuiltGateway, bacnet_mcp::builder::BuildError> {
     let json = format!(
         r#"{{
             "device": {{
@@ -63,24 +147,7 @@ async fn sc_runtime_connects_server_and_client_nodes_to_local_hub() {
     );
     let config = GatewayConfig::from_json(&json).unwrap();
     config.validate().unwrap();
-
-    let built = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        GatewayBuilder::new(config).build(),
-    )
-    .await
-    .expect("SC gateway build should not hang")
-    .expect("SC gateway should connect to local hub");
-
-    assert_eq!(built.server_mac, [0x02, 0, 0, 0, 0, 0x02]);
-    assert_eq!(
-        built.state.require_client().unwrap().transport_name(),
-        "sc",
-        "GatewayState should expose the SC client runtime"
-    );
-
-    drop(built);
-    hub.stop().await;
+    GatewayBuilder::new(config).build().await
 }
 
 struct CertMaterial {
