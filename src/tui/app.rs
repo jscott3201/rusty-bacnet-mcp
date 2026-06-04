@@ -430,6 +430,10 @@ mod detach_tests {
     }
 
     fn make_app(http_listening: bool) -> App {
+        make_app_with_text(http_listening, "{}".into())
+    }
+
+    fn make_app_with_text(http_listening: bool, config_text: String) -> App {
         let config = baseline_config();
         let state = GatewayState::new(ObjectDatabase::new(), config.clone());
         App::new(
@@ -437,7 +441,7 @@ mod detach_tests {
             config,
             "/tmp/test.json".into(),
             CancellationToken::new(),
-            "{}".into(),
+            config_text,
             LogBuffer::default(),
             http_listening,
         )
@@ -521,5 +525,65 @@ mod detach_tests {
         let action = app.handle_event(Event::Key(key(KeyCode::Tab)));
         assert!(matches!(action, Action::None));
         assert_eq!(app.tab, Tab::Configure);
+    }
+
+    #[test]
+    fn configure_f5_validates_buffer_and_sets_ok_toast() {
+        let mut app = make_app_with_text(true, valid_config_text());
+        app.tab = Tab::Configure;
+
+        let action = app.handle_event(Event::Key(key(KeyCode::F(5))));
+
+        assert!(matches!(action, Action::None));
+        assert_eq!(app.configure.status_line, "Validation OK");
+        assert!(matches!(app.configure.last_validation, Some(Ok(()))));
+        let toast = app.toast.expect("expected validation toast");
+        assert!(matches!(toast.1, StatusKind::Ok));
+        assert_eq!(toast.2, "Validation OK");
+    }
+
+    #[test]
+    fn configure_f5_records_validation_error_and_sets_err_toast() {
+        let mut app = make_app_with_text(true, invalid_config_text());
+        app.tab = Tab::Configure;
+
+        let action = app.handle_event(Event::Key(key(KeyCode::F(5))));
+
+        assert!(matches!(action, Action::None));
+        assert!(app.configure.status_line.contains("device instance"));
+        assert!(matches!(
+            app.configure.last_validation,
+            Some(Err(ref msg)) if msg.contains("device instance")
+        ));
+        let toast = app.toast.expect("expected validation toast");
+        assert!(matches!(toast.1, StatusKind::Err));
+        assert!(toast.2.contains("device instance"));
+    }
+
+    fn valid_config_text() -> String {
+        r#"{
+  "mcp": {
+    "read_only": true
+  },
+  "device": {
+    "instance": 1234,
+    "name": "TUI Test Gateway",
+    "vendor_id": 999,
+    "description": "test"
+  },
+  "transports": {
+    "bip": {
+      "interface": "127.0.0.1",
+      "port": 47808,
+      "broadcast": "127.255.255.255",
+      "network_number": 1
+    }
+  }
+}"#
+        .into()
+    }
+
+    fn invalid_config_text() -> String {
+        valid_config_text().replace("\"instance\": 1234", "\"instance\": 4194303")
     }
 }

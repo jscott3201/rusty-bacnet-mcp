@@ -135,3 +135,90 @@ pub fn render(frame: &mut Frame, area: Rect, state: &mut ConfigureState, focused
         .wrap(Wrap { trim: true });
     frame.render_widget(panel, chunks[1]);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_check_normalizes_trailing_newline() {
+        let state = ConfigureState::new(valid_config_text_with_newline());
+        assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn validate_accepts_valid_config_and_updates_status() {
+        let mut state = ConfigureState::new(valid_config_text());
+
+        let parsed = state.validate().unwrap();
+
+        assert_eq!(parsed.device.instance, 1234);
+        assert_eq!(state.status_line, "Validation OK");
+        assert!(matches!(state.last_validation, Some(Ok(()))));
+    }
+
+    #[test]
+    fn validate_rejects_config_errors() {
+        let mut state = ConfigureState::new(invalid_config_text());
+
+        let err = state.validate().unwrap_err();
+
+        assert!(err.contains("device instance"), "got: {err}");
+        assert!(state.last_validation.is_none());
+    }
+
+    #[test]
+    fn mark_saved_updates_disk_snapshot_and_clears_dirty_state() {
+        let mut state = ConfigureState::new(valid_config_text_with_newline());
+        state.editor = TextArea::from(valid_config_text().lines().collect::<Vec<_>>());
+
+        state.mark_saved();
+
+        assert_eq!(state.status_line, "Saved & reloaded");
+        assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn record_error_sets_validation_error_and_status_line() {
+        let mut state = ConfigureState::new(valid_config_text());
+
+        state.record_error("bad config");
+
+        assert_eq!(state.status_line, "bad config");
+        assert!(matches!(
+            state.last_validation,
+            Some(Err(ref msg)) if msg == "bad config"
+        ));
+    }
+
+    fn valid_config_text() -> String {
+        r#"{
+  "mcp": {
+    "read_only": true
+  },
+  "device": {
+    "instance": 1234,
+    "name": "TUI Test Gateway",
+    "vendor_id": 999,
+    "description": "test"
+  },
+  "transports": {
+    "bip": {
+      "interface": "127.0.0.1",
+      "port": 47808,
+      "broadcast": "127.255.255.255",
+      "network_number": 1
+    }
+  }
+}"#
+        .into()
+    }
+
+    fn valid_config_text_with_newline() -> String {
+        format!("{}\n", valid_config_text())
+    }
+
+    fn invalid_config_text() -> String {
+        valid_config_text().replace("\"instance\": 1234", "\"instance\": 4194303")
+    }
+}
