@@ -165,6 +165,7 @@ Live state and audit resources:
 - `bacnet://state/devices`
 - `bacnet://state/local-objects`
 - `bacnet://state/config`
+- `bacnet://state/pcap-captures`
 - `bacnet://audit/recent`
 - `bacnet://topology/graph`
 

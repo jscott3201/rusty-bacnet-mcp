@@ -16,6 +16,7 @@ pub mod properties;
 pub mod reference;
 pub mod schedule_write;
 pub mod schedules;
+pub mod state_resource;
 pub mod topology;
 pub mod trend;
 pub(crate) mod value_format;
@@ -32,7 +33,6 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, tool, tool_handler, tool_router};
 
-use crate::config::describe_sc_runtime;
 use crate::state::GatewayState;
 
 /// MCP server handler for the BACnet gateway.
@@ -430,111 +430,6 @@ impl GatewayMcp {
     }
 }
 
-impl GatewayMcp {
-    async fn read_state_resource(&self, uri: &str) -> Option<String> {
-        match uri {
-            "bacnet://state/devices" => {
-                let text = match self.state.require_client() {
-                    Ok(client) => {
-                        let devices = client.discovered_devices().await;
-                        if devices.is_empty() {
-                            "No discovered devices.".to_string()
-                        } else {
-                            discovery::format_device_list(
-                                devices,
-                                discovery::DEFAULT_DEVICE_LIST_LIMIT,
-                                discovery::DeviceListFormat::StateResource,
-                            )
-                        }
-                    }
-                    Err(_) => "No devices (client not started).".to_string(),
-                };
-                Some(text)
-            }
-            "bacnet://state/local-objects" => {
-                let db = self.state.db.read().await;
-                let rows = objects::collect_local_object_rows(&db, None);
-                Some(objects::format_local_object_rows(
-                    &rows,
-                    objects::DEFAULT_LIST_LOCAL_OBJECTS_LIMIT,
-                    objects::LocalObjectListFormat::StateResource,
-                ))
-            }
-            "bacnet://audit/recent" => {
-                // Last 100 entries by default. Truncate to keep the resource
-                // readable; bigger windows fetch via the JSON-Lines file
-                // (mcp.audit.path) once the operator wires one up.
-                let entries = self.state.audit.snapshot(100);
-                let mut out = format!(
-                    "{} audit entr{} (most recent last):\n",
-                    entries.len(),
-                    if entries.len() == 1 { "y" } else { "ies" }
-                );
-                for e in &entries {
-                    out.push_str(&format_audit_line(e));
-                }
-                Some(out)
-            }
-            "bacnet://state/config" => {
-                let config = &self.state.config;
-                let mut result = String::new();
-                result.push_str(&format!(
-                    "Device: {} (instance {})\n",
-                    config.device.name, config.device.instance
-                ));
-                // Read mode from the live RuntimeFlags atomic, not the frozen
-                // startup config — TUI hot-reload of mcp.read_only is reflected
-                // here so MCP clients can trust this resource for safety state.
-                result.push_str(&format!(
-                    "Mode: {}\n",
-                    if self.state.is_read_only() {
-                        "read-only"
-                    } else {
-                        "writable"
-                    }
-                ));
-                if let Some(http) = &config.mcp.http {
-                    result.push_str(&format!("HTTP transport bind: {}\n", http.bind));
-                }
-                result.push_str(&format!(
-                    "Auth: {}\n",
-                    if config.mcp.api_key.is_some() {
-                        "enabled (bearer token)"
-                    } else {
-                        "disabled"
-                    }
-                ));
-                if let Some(bip) = &config.transports.bip {
-                    result.push_str(&format!(
-                        "Transport BIP: {}:{}, network {}\n",
-                        bip.interface, bip.port, bip.network_number
-                    ));
-                }
-                if let Some(sc) = &config.transports.sc {
-                    result.push_str(&format!(
-                        "Transport SC: {}, network {}\n",
-                        describe_sc_runtime(sc),
-                        sc.network_number
-                    ));
-                }
-                Some(result)
-            }
-            "bacnet://topology/graph" => {
-                let graph = topology::build_graph(&self.state).await;
-                // serde_json::to_string_pretty so a human reading the
-                // resource directly (TUI, curl, debug) sees readable
-                // structure. Agents using a JSON parser don't care about
-                // whitespace; pretty-printing is universally OK here.
-                Some(
-                    serde_json::to_string_pretty(&graph)
-                        .unwrap_or_else(|e| format!("{{\"error\": \"serialize topology: {e}\"}}")),
-                )
-            }
-            _ => None,
-        }
-    }
-}
-
 #[tool_handler]
 impl ServerHandler for GatewayMcp {
     fn get_info(&self) -> ServerInfo {
@@ -597,7 +492,7 @@ impl ServerHandler for GatewayMcp {
             }
 
             // Try live state resources (async — may read from client/db).
-            if let Some(text) = self.read_state_resource(&uri).await {
+            if let Some(text) = state_resource::read_state_resource(&self.state, &uri).await {
                 return Ok(ReadResourceResult::new(vec![ResourceContents::text(
                     text,
                     uri.clone(),
@@ -610,30 +505,4 @@ impl ServerHandler for GatewayMcp {
             ))
         }
     }
-}
-
-/// Render one audit entry as a single line for the `bacnet://audit/recent`
-/// resource. Format is human-readable and stable enough to grep:
-/// `<iso-timestamp> <decision> <tool> <target> <property> [pri=N] [dry-run] reason`
-fn format_audit_line(e: &crate::audit::AuditEntry) -> String {
-    let secs = (e.at_ms / 1000) as i64;
-    let ms = (e.at_ms % 1000) as u32;
-    // Best-effort RFC3339-ish stamp without pulling chrono in. The number is
-    // already epoch-millis so anyone who needs a real timestamp can reparse.
-    let ts = format!("epoch+{secs}.{ms:03}");
-
-    let target = e.target.as_deref().unwrap_or("-");
-    let property = e.property.as_deref().unwrap_or("-");
-    let pri = e.priority.map(|p| format!(" pri={p}")).unwrap_or_default();
-    let dry = if e.dry_run { " dry-run" } else { "" };
-    let reason = if e.reason.is_empty() {
-        String::new()
-    } else {
-        format!(" — {}", e.reason)
-    };
-    format!(
-        "  {ts} {decision:>5} {tool} {target} {property}{pri}{dry}{reason}\n",
-        decision = e.decision,
-        tool = e.tool,
-    )
 }

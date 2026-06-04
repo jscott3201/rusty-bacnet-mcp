@@ -88,6 +88,11 @@ pub fn state_resources() -> Vec<Resource> {
             "Current gateway configuration (sanitized, no secrets)",
         ),
         resource(
+            "bacnet://state/pcap-captures",
+            "Pcap Capture Sessions",
+            "Bounded live BACnet/IP pcap capture session list with status and packet counts",
+        ),
+        resource(
             "bacnet://audit/recent",
             "Recent Write Audit Log",
             "Append-only log of write attempts (allow / deny / dry-run / error). Surfaces the gateway's safety control plane to agents and operators — every write_property, write_local_property, and relinquish_at_priority call lands here.",
