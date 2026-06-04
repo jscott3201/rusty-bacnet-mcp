@@ -163,7 +163,11 @@ async fn mcp_read_nonexistent_object() {
 #[tokio::test]
 async fn mcp_list_known_devices_no_client() {
     let state = test_state();
-    let result = discovery::list_known_devices_impl(&state).await;
+    let result = discovery::list_known_devices_impl(
+        &state,
+        discovery::ListKnownDevicesParams { limit: None },
+    )
+    .await;
     assert!(result.unwrap_err().contains("not started"));
 }
 
@@ -177,6 +181,7 @@ async fn mcp_discover_devices_no_client() {
             high_instance: None,
             timeout_seconds: Some(1),
             target: None,
+            limit: None,
         },
     )
     .await;
