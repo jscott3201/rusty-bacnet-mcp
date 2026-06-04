@@ -61,6 +61,9 @@ tokio-util         = { version = "0.7", features = ["rt"], optional = true }
 tokio-rustls       = { version = "0.26", optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 
+# Optional BACnet/IP packet capture support.
+pcap = { version = "2", optional = true }
+
 [dev-dependencies]
 tokio    = { version = "1", features = ["net", "rt", "sync", "macros", "time", "test-util"] }
 rmcp     = { version = "1.6", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "tower"] }
@@ -86,3 +89,5 @@ tui     = [
 bin     = ["mcp", "tui", "dep:clap", "dep:tracing-subscriber", "dep:tokio-util"]
 # BACnet/SC transport (TLS WebSocket plus file/native trust-store helpers).
 sc      = ["bacnet-transport/sc-tls", "dep:tokio-rustls", "dep:rustls-native-certs"]
+# BACnet/IP capture and offline pcap tooling.
+pcap    = ["dep:pcap"]

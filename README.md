@@ -138,7 +138,8 @@ Core tool groups:
   `read_schedule_exceptions`, `write_schedule_weekly`,
   `write_schedule_exceptions`
 - Trends: `get_trend_log_info`, `read_trend_log`
-- Diagnostics: `ping_device`, `probe_bbmd`, `analyze_bacnet_ip_packet`
+- Diagnostics: `ping_device`, `probe_bbmd`, `analyze_bacnet_ip_packet`,
+  `list_pcap_interfaces` with the `pcap` feature
 - Local objects: `list_local_objects`, `read_local_property`,
   `write_local_property`, `create_local_object`, `delete_local_object`
 
@@ -273,6 +274,9 @@ bash .github/scripts/check-no-secrets.sh
 Dev CI is intentionally lean: formatting, linting, dependency checks, file-size
 cap, and secret scan run on PRs. Heavy OS matrix tests, release builds, and
 Docker builds are reserved for main/manual paths.
+
+Optional BACnet/IP capture helpers are available with `--features bin,sc,pcap`.
+The default binary build does not pull `pcap` in.
 
 ## Built On
 
