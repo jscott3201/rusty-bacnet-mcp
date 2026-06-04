@@ -22,6 +22,7 @@ use crate::tui::tabs::{
     configure::ConfigureState,
     observe::ObserveState,
     operate::{OpForm, OperateState},
+    shell::ShellState,
 };
 
 /// What `handle_event` asks the run loop to do next.
@@ -40,6 +41,8 @@ pub enum Action {
     SaveAndReload,
     /// Run the active operate form (Enter inside operate tab).
     RunOperate,
+    /// Run the current shell command (Enter inside shell tab).
+    RunShellCommand,
     /// Toggle mouse capture (Ctrl-M) — mouse off lets the terminal handle native selection.
     ToggleMouse,
     /// Show or hide the help popup.
@@ -70,6 +73,7 @@ pub struct App {
     pub configure: ConfigureState,
     pub observe: ObserveState,
     pub operate: OperateState,
+    pub shell: ShellState,
 
     pub toast: Option<(Instant, StatusKind, String)>,
 }
@@ -99,6 +103,7 @@ impl App {
             configure: ConfigureState::new(initial_config_text),
             observe: ObserveState::new(),
             operate: OperateState::new(),
+            shell: ShellState::new(),
             toast: None,
         }
     }
@@ -142,7 +147,8 @@ impl App {
 
         // Tab cycling (works on any tab as long as we're not editing text).
         let editing_text = self.tab == Tab::Configure
-            || (self.tab == Tab::Operate && !self.operate.current_form_mut().fields.is_empty());
+            || (self.tab == Tab::Operate && !self.operate.current_form_mut().fields.is_empty())
+            || self.tab == Tab::Shell;
 
         if !editing_text || matches!(k.code, KeyCode::Tab | KeyCode::BackTab) {
             match k.code {
@@ -162,6 +168,7 @@ impl App {
             Tab::Configure => self.handle_key_configure(k),
             Tab::Observe => self.handle_key_observe(k),
             Tab::Operate => self.handle_key_operate(k),
+            Tab::Shell => self.handle_key_shell(k),
         }
     }
 
@@ -277,6 +284,33 @@ impl App {
             KeyCode::Enter => Action::RunOperate,
             KeyCode::Char(c) => {
                 self.operate.current_form_mut().current().value.push(c);
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_shell(&mut self, k: KeyEvent) -> Action {
+        match k.code {
+            KeyCode::Enter => Action::RunShellCommand,
+            KeyCode::Esc => {
+                self.shell.clear_input();
+                Action::None
+            }
+            KeyCode::Backspace => {
+                self.shell.backspace();
+                Action::None
+            }
+            KeyCode::Up => {
+                self.shell.recall_previous();
+                Action::None
+            }
+            KeyCode::Down => {
+                self.shell.recall_next();
+                Action::None
+            }
+            KeyCode::Char(c) => {
+                self.shell.push_char(c);
                 Action::None
             }
             _ => Action::None,
@@ -418,6 +452,15 @@ mod detach_tests {
         }
     }
 
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: ratatui::crossterm::event::KeyEventState::NONE,
+        }
+    }
+
     #[test]
     fn f12_returns_detach_action_when_http_listening() {
         let mut app = make_app(true);
@@ -449,5 +492,34 @@ mod detach_tests {
         app.tab = Tab::Configure;
         let action = app.handle_event(Event::Key(f12()));
         assert!(matches!(action, Action::DetachToHeadless));
+    }
+
+    #[test]
+    fn shell_tab_keeps_q_as_prompt_text() {
+        let mut app = make_app(true);
+        app.tab = Tab::Shell;
+        let action = app.handle_event(Event::Key(key(KeyCode::Char('q'))));
+        assert!(matches!(action, Action::None));
+        assert_eq!(app.shell.input, "q");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn shell_enter_requests_run_action() {
+        let mut app = make_app(true);
+        app.tab = Tab::Shell;
+        app.shell.input = "status".into();
+        let action = app.handle_event(Event::Key(key(KeyCode::Enter)));
+        assert!(matches!(action, Action::RunShellCommand));
+        assert_eq!(app.shell.input, "status");
+    }
+
+    #[test]
+    fn tab_cycles_from_shell_tab() {
+        let mut app = make_app(true);
+        app.tab = Tab::Shell;
+        let action = app.handle_event(Event::Key(key(KeyCode::Tab)));
+        assert!(matches!(action, Action::None));
+        assert_eq!(app.tab, Tab::Configure);
     }
 }
