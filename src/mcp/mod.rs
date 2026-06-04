@@ -330,7 +330,17 @@ impl GatewayMcp {
         &self,
         params: Parameters<pcap_tools::AnalyzePcapFileParams>,
     ) -> Result<String, String> {
-        pcap_tools::analyze_pcap_file_impl(params.0)
+        let params = params.0;
+        #[cfg(feature = "pcap")]
+        {
+            tokio::task::spawn_blocking(move || pcap_tools::analyze_pcap_file_impl(params))
+                .await
+                .map_err(|e| format!("pcap analysis task failed: {e}"))?
+        }
+        #[cfg(not(feature = "pcap"))]
+        {
+            pcap_tools::analyze_pcap_file_impl(params)
+        }
     }
 
     // --- Local object tools ---
