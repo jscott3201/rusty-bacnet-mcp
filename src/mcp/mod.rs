@@ -8,6 +8,7 @@ pub mod cov;
 pub mod diagnostics;
 pub mod discovery;
 pub mod objects;
+pub mod points;
 pub mod properties;
 pub mod reference;
 pub mod schedule_write;
@@ -122,6 +123,14 @@ impl GatewayMcp {
         params: Parameters<bulk::ReadPropertyMultipleParams>,
     ) -> Result<String, String> {
         bulk::read_property_multiple_impl(&self.state, params.0).await
+    }
+
+    #[tool(description = "Read compact value and health lines for selected points.")]
+    async fn read_point_summary(
+        &self,
+        params: Parameters<points::ReadPointSummaryParams>,
+    ) -> Result<String, String> {
+        points::read_point_summary_impl(&self.state, params.0).await
     }
 
     #[tool(

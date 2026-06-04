@@ -732,6 +732,7 @@ fn reference_templates_list() {
 fn reference_read_tool_guide() {
     let content = reference::read_reference("bacnet://reference/tool-guide").unwrap();
     assert!(content.contains("Token-efficient usage"));
+    assert!(content.contains("read_point_summary"));
     assert!(content.contains("read_property_multiple"));
     assert!(content.contains("dry_run"));
 }
