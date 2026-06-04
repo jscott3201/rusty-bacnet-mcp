@@ -178,6 +178,8 @@ bounded scalar rendering, and value/error/missing counts. Set
 `response_mode: "detailed"` only when full decoded property lines are needed.
 `read_property` also defaults to compact output for large arrays/strings; set
 `response_mode: "detailed"` when the full decoded value is required.
+`list_local_objects` defaults to the first 500 gateway-local objects and reports
+omissions; set `limit` up to 5000 for larger local databases.
 
 **Resources**:
 

@@ -160,8 +160,8 @@ Tool families:
     probe_bbmd reads BBMD BDT/FDT tables by IP:port.
 
   local objects:
-    list_local_objects, read_local_property, write_local_property,
-    create_local_object, and delete_local_object operate on the gateway database.
+    list_local_objects returns a bounded local DB view; set limit when needed.
+    read_local_property, write_local_property, create_local_object, and delete_local_object operate on the gateway database.
 
 Safety posture:
   - The gateway is read-only by default.

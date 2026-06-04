@@ -64,9 +64,14 @@ fn mcp_server_has_tool_capabilities() {
 #[tokio::test]
 async fn mcp_list_local_objects() {
     let state = test_state();
-    let result =
-        objects::list_local_objects_impl(&state, objects::ListObjectsParams { object_type: None })
-            .await;
+    let result = objects::list_local_objects_impl(
+        &state,
+        objects::ListObjectsParams {
+            object_type: None,
+            limit: None,
+        },
+    )
+    .await;
 
     let result = result.unwrap();
     assert!(result.contains("2 local object(s)"));
@@ -81,6 +86,7 @@ async fn mcp_list_local_objects_filtered() {
         &state,
         objects::ListObjectsParams {
             object_type: Some("analog-value".to_string()),
+            limit: None,
         },
     )
     .await;
@@ -295,6 +301,7 @@ async fn mcp_create_local_object() {
         &state,
         objects::ListObjectsParams {
             object_type: Some("multi-state-value".to_string()),
+            limit: None,
         },
     )
     .await;

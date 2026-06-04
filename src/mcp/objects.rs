@@ -13,6 +13,9 @@ use crate::parse::{
 use crate::safety::PolicyDecision;
 use crate::state::GatewayState;
 
+const DEFAULT_LIST_LOCAL_OBJECTS_LIMIT: usize = 500;
+const MAX_LIST_LOCAL_OBJECTS_LIMIT: usize = 5000;
+
 /// Parameters for list_local_objects tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListObjectsParams {
@@ -21,6 +24,9 @@ pub struct ListObjectsParams {
         description = "Filter by object type (optional, e.g., 'analog-value', 'binary-input')"
     )]
     pub object_type: Option<String>,
+    /// Maximum local objects to return. Default 500, hard cap 5000.
+    #[schemars(description = "Max objects to return (default 500, hard cap 5000)")]
+    pub limit: Option<u32>,
 }
 
 /// Parameters for read_local_property tool.
@@ -65,6 +71,7 @@ pub async fn list_local_objects_impl(
     state: &GatewayState,
     params: ListObjectsParams,
 ) -> Result<String, String> {
+    let limit = list_local_objects_limit(params.limit)?;
     let filter_type = match &params.object_type {
         Some(t) => match parse_object_type(t) {
             Ok(ot) => Some(ot),
@@ -74,7 +81,7 @@ pub async fn list_local_objects_impl(
     };
 
     let db = state.db.read().await;
-    let objects: Vec<_> = db
+    let mut objects: Vec<_> = db
         .iter_objects()
         .filter(|(oid, _)| {
             filter_type
@@ -82,6 +89,7 @@ pub async fn list_local_objects_impl(
                 .unwrap_or(true)
         })
         .collect();
+    objects.sort_by_key(|(oid, _)| (oid.object_type().to_raw(), oid.instance_number()));
 
     if objects.is_empty() {
         return Ok(match &params.object_type {
@@ -90,8 +98,17 @@ pub async fn list_local_objects_impl(
         });
     }
 
-    let mut result = format!("{} local object(s):\n", objects.len());
-    for (oid, obj) in &objects {
+    let shown = objects.len().min(limit);
+    let omitted = objects.len().saturating_sub(shown);
+    let mut result = if omitted > 0 {
+        format!(
+            "{} local object(s) (showing first {shown}):\n",
+            objects.len()
+        )
+    } else {
+        format!("{} local object(s):\n", objects.len())
+    };
+    for (oid, obj) in objects.iter().take(shown) {
         result.push_str(&format!(
             "  - {}:{} \"{}\"\n",
             object_type_name(oid.object_type()),
@@ -99,7 +116,22 @@ pub async fn list_local_objects_impl(
             obj.object_name(),
         ));
     }
+    if omitted > 0 {
+        result.push_str(&format!(
+            "  ... omitted {omitted} object(s); set limit up to {MAX_LIST_LOCAL_OBJECTS_LIMIT} to show more.\n"
+        ));
+    }
     Ok(result)
+}
+
+fn list_local_objects_limit(raw: Option<u32>) -> Result<usize, String> {
+    let limit = raw.unwrap_or(DEFAULT_LIST_LOCAL_OBJECTS_LIMIT as u32);
+    if limit == 0 || limit > MAX_LIST_LOCAL_OBJECTS_LIMIT as u32 {
+        return Err(format!(
+            "limit {limit} out of range; must be 1..={MAX_LIST_LOCAL_OBJECTS_LIMIT}"
+        ));
+    }
+    Ok(limit as usize)
 }
 
 pub async fn read_local_property_impl(
@@ -148,6 +180,101 @@ pub async fn read_local_property_impl(
             ))
         }
         Err(e) => Err(format!("Error reading property: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DeviceConfig, GatewayConfig, McpConfig, TransportsConfig};
+    use bacnet_objects::database::ObjectDatabase;
+    use bacnet_objects::device::{DeviceConfig as BacnetDeviceConfig, DeviceObject};
+
+    #[test]
+    fn list_local_objects_params_default_limit_is_none() {
+        let params: ListObjectsParams = serde_json::from_value(serde_json::json!({
+            "object_type": null
+        }))
+        .unwrap();
+        assert_eq!(params.limit, None);
+    }
+
+    #[test]
+    fn list_local_objects_limit_rejects_invalid_values() {
+        assert!(
+            list_local_objects_limit(Some(0))
+                .unwrap_err()
+                .contains("out of range")
+        );
+        assert!(
+            list_local_objects_limit(Some(MAX_LIST_LOCAL_OBJECTS_LIMIT as u32 + 1))
+                .unwrap_err()
+                .contains("out of range")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_local_objects_applies_limit_and_reports_omissions() {
+        let state = test_state();
+        for instance in 1..=3 {
+            create_local_object_impl(
+                &state,
+                CreateLocalObjectParams {
+                    object_type: "analog-value".into(),
+                    object_instance: instance,
+                    object_name: format!("AV {instance}"),
+                    number_of_states: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let out = list_local_objects_impl(
+            &state,
+            ListObjectsParams {
+                object_type: None,
+                limit: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(out.contains("4 local object(s) (showing first 2)"));
+        assert!(out.contains("analog-value:1"));
+        assert!(out.contains("analog-value:2"));
+        assert!(!out.contains("analog-value:3"));
+        assert!(out.contains("omitted 2 object(s)"));
+    }
+
+    fn test_state() -> GatewayState {
+        let cfg = GatewayConfig {
+            mcp: McpConfig {
+                read_only: false,
+                ..McpConfig::default()
+            },
+            device: DeviceConfig {
+                instance: 1234,
+                name: "Test Gateway".to_string(),
+                vendor_id: 999,
+                description: "Test".to_string(),
+            },
+            transports: TransportsConfig::default(),
+            bbmd: None,
+            foreign_device: None,
+            routes: vec![],
+            objects: vec![],
+        };
+        let mut db = ObjectDatabase::new();
+        let device = DeviceObject::new(BacnetDeviceConfig {
+            instance: 1234,
+            name: "Test Gateway".into(),
+            vendor_id: 999,
+            ..BacnetDeviceConfig::default()
+        })
+        .unwrap();
+        db.add(Box::new(device)).unwrap();
+        GatewayState::new(db, cfg)
     }
 }
 

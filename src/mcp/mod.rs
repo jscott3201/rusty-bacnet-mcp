@@ -306,7 +306,7 @@ impl GatewayMcp {
 
     // --- Local object tools ---
 
-    #[tool(description = "List gateway-local BACnet objects, optionally filtered by type.")]
+    #[tool(description = "List bounded gateway-local BACnet objects, optionally filtered by type.")]
     async fn list_local_objects(
         &self,
         params: Parameters<objects::ListObjectsParams>,
