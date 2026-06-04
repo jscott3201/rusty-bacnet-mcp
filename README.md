@@ -290,7 +290,9 @@ The default binary build does not pull `pcap` in. `analyze_pcap_file` reads
 offline pcap files with Ethernet, raw IPv4, BSD null, or Linux SLL datalinks
 and returns bounded BACnet/IP service, peer, BVLC, and decode-error summaries.
 Live capture sessions use bounded packet counts, a bounded recent-packet ring,
-and the default BPF `udp port 47808`.
+and the default BPF `udp port 47808`. The TUI Shell tab mirrors these
+diagnostics with `pcap interfaces`, `pcap file`, `pcap start`, `pcap list`,
+`pcap read`, and `pcap stop` commands.
 
 ## Built On
 
