@@ -17,6 +17,7 @@ pub mod schedules;
 pub mod topology;
 pub mod trend;
 pub(crate) mod value_format;
+pub mod wire;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -305,6 +306,14 @@ impl GatewayMcp {
         params: Parameters<diagnostics::ProbeBbmdParams>,
     ) -> Result<String, String> {
         diagnostics::probe_bbmd_impl(&self.state, params.0).await
+    }
+
+    #[tool(description = "Decode one BACnet/IP payload or pcap frame into compact wire layers.")]
+    async fn analyze_bacnet_ip_packet(
+        &self,
+        params: Parameters<wire::AnalyzeBacnetIpPacketParams>,
+    ) -> Result<String, String> {
+        wire::analyze_bacnet_ip_packet_impl(params.0)
     }
 
     // --- Local object tools ---

@@ -84,9 +84,17 @@ commonly exceed APDU limits. COV polling is bounded by `max_events`.
 - `ping_device`: repeated reads of a small Device property with latency/loss
   summary.
 - `probe_bbmd`: B/IP-only BBMD BDT/FDT inspection.
+- `analyze_bacnet_ip_packet`: decode one BACnet/IP BVLC payload or captured
+  frame into compact BVLC/NPDU/APDU layers.
 
 `probe_bbmd` is intentionally unavailable on BACnet/SC because SC has no BBMD
 tables.
+
+`analyze_bacnet_ip_packet` is read-only and does not touch the active BACnet
+runtime. It accepts hex bytes for `input` shapes `bvlc`, `ipv4`, `ethernet`,
+`bsd_null`, and `linux_sll`; the frame inputs are the datalink shapes expected
+from pcap capture handles. Compact mode returns a UDP flow and service summary.
+Detailed mode adds bounded layer lines with `max_detail_lines`.
 
 ## Local Objects
 
@@ -127,4 +135,3 @@ State resources:
 The state config resource reflects live runtime state, not simply the last file
 contents. TUI partial reloads preserve stale restart-required fields in this
 resource until the daemon restarts.
-
