@@ -433,11 +433,11 @@ impl GatewayMcp {
                     ));
                 }
                 if let Some(sc) = &config.transports.sc {
-                    let role = match (sc.listen.as_deref(), sc.hub_uri.as_deref()) {
-                        (Some(addr), _) => format!("Hub listening on {addr}"),
-                        (_, Some(uri)) => format!("Node connected to {uri}"),
-                        _ => "(unconfigured)".to_string(),
-                    };
+                    let role = sc
+                        .hub_uri
+                        .as_deref()
+                        .map(|uri| format!("Node connected to {uri}"))
+                        .unwrap_or_else(|| "(unconfigured)".to_string());
                     result.push_str(&format!(
                         "Transport SC: {}, network {}\n",
                         role, sc.network_number

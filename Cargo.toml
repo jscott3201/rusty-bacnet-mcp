@@ -57,6 +57,10 @@ clap               = { version = "4", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 tokio-util         = { version = "0.7", features = ["rt"], optional = true }
 
+# BACnet/SC TLS client configuration.
+tokio-rustls       = { version = "0.26", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+
 [dev-dependencies]
 tokio    = { version = "1", features = ["net", "rt", "sync", "macros", "time", "test-util"] }
 rmcp     = { version = "1.6", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "tower"] }
@@ -79,5 +83,5 @@ tui     = [
     "dep:futures",
 ]
 bin     = ["mcp", "tui", "dep:clap", "dep:tracing-subscriber", "dep:tokio-util"]
-# BACnet/SC transport (forwards to bacnet-transport's TLS WebSocket support).
-sc      = ["bacnet-transport/sc-tls"]
+# BACnet/SC transport (TLS WebSocket plus file/native trust-store helpers).
+sc      = ["bacnet-transport/sc-tls", "dep:tokio-rustls", "dep:rustls-native-certs"]

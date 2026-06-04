@@ -8,7 +8,7 @@
 //!
 //! - `mcp` — MCP server module (`mcp`) plus auth middleware. Default.
 //! - `bin` — pulls in `mcp` plus the `bacnet-mcp` CLI binary entry point.
-//! - `sc` — enables BACnet/SC transport via the upstream `bacnet-transport/sc-tls`.
+//! - `sc` — enables BACnet/SC TLS WebSocket runtime support.
 //!
 //! # Always available (no MCP/web dependencies)
 //!
@@ -25,6 +25,7 @@ pub mod config;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod parse;
+pub mod runtime;
 pub mod safety;
 pub mod state;
 #[cfg(feature = "tui")]

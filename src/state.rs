@@ -17,14 +17,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
-use bacnet_client::client::BACnetClient;
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::cov::COVNotificationRequest;
-use bacnet_transport::bip::BipTransport;
 
 use crate::audit::{AuditLog, build_audit_log};
 use crate::config::GatewayConfig;
+use crate::runtime::GatewayClient;
 use crate::safety::{LivePolicy, WritePolicy, build_live_policy};
 
 /// Live-mutable runtime flags.
@@ -131,7 +130,7 @@ pub struct GatewayState {
     /// File path is fixed at startup — the open path is stale-until-restart.
     pub audit: Arc<AuditLog>,
     /// BACnet client for remote device operations (None in test-only mode).
-    client: Option<Arc<BACnetClient<BipTransport>>>,
+    client: Option<Arc<GatewayClient>>,
     /// Receiver for inbound COV notifications. Created at stack startup so
     /// notification polling sees events that arrived before the poll call.
     cov_rx: Option<Arc<Mutex<broadcast::Receiver<COVNotificationRequest>>>>,
@@ -164,7 +163,7 @@ impl GatewayState {
     pub fn try_new_with_stack(
         db: Arc<RwLock<ObjectDatabase>>,
         config: Arc<GatewayConfig>,
-        client: BACnetClient<BipTransport>,
+        client: GatewayClient,
     ) -> Result<Self, String> {
         let flags = Arc::new(RuntimeFlags::from_config(&config)?);
         let audit = build_audit_log(config.mcp.audit.as_ref());
@@ -185,18 +184,18 @@ impl GatewayState {
     pub fn new_with_stack(
         db: Arc<RwLock<ObjectDatabase>>,
         config: Arc<GatewayConfig>,
-        client: BACnetClient<BipTransport>,
+        client: GatewayClient,
     ) -> Self {
         Self::try_new_with_stack(db, config, client).expect("safety config must validate")
     }
 
     /// Get a reference to the BACnet client (if started).
-    pub fn client(&self) -> Option<&BACnetClient<BipTransport>> {
+    pub fn client(&self) -> Option<&GatewayClient> {
         self.client.as_deref()
     }
 
     /// Get the BACnet client, returning an error message if not started.
-    pub fn require_client(&self) -> Result<&BACnetClient<BipTransport>, String> {
+    pub fn require_client(&self) -> Result<&GatewayClient, String> {
         self.client()
             .ok_or_else(|| "BACnet client not started".to_string())
     }
@@ -228,7 +227,7 @@ impl GatewayState {
             .map_err(|e| format!("invalid address '{address}': {e}"))?;
         let mac = crate::parse::socket_addr_to_mac(addr);
         client
-            .add_device(instance, &mac)
+            .add_bip_device(instance, &mac)
             .await
             .map_err(|e| format!("{e}"))
     }
