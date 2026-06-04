@@ -86,6 +86,8 @@ commonly exceed APDU limits. COV polling is bounded by `max_events`.
 - `probe_bbmd`: B/IP-only BBMD BDT/FDT inspection.
 - `analyze_bacnet_ip_packet`: decode one BACnet/IP BVLC payload or captured
   frame into compact BVLC/NPDU/APDU layers.
+- `list_pcap_interfaces`: list host capture interfaces when the `pcap` feature
+  is enabled.
 
 `probe_bbmd` is intentionally unavailable on BACnet/SC because SC has no BBMD
 tables.
@@ -95,6 +97,10 @@ runtime. It accepts hex bytes for `input` shapes `bvlc`, `ipv4`, `ethernet`,
 `bsd_null`, and `linux_sll`; the frame inputs are the datalink shapes expected
 from pcap capture handles. Compact mode returns a UDP flow and service summary.
 Detailed mode adds bounded layer lines with `max_detail_lines`.
+
+`list_pcap_interfaces` is feature-gated because libpcap is a platform-level
+dependency. It returns bounded, sorted interface rows and can omit addresses
+for a shorter listing.
 
 ## Local Objects
 

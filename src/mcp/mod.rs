@@ -9,6 +9,7 @@ pub mod diagnostics;
 pub mod discovery;
 pub mod files;
 pub mod objects;
+pub mod pcap_tools;
 pub mod points;
 pub mod properties;
 pub mod reference;
@@ -314,6 +315,14 @@ impl GatewayMcp {
         params: Parameters<wire::AnalyzeBacnetIpPacketParams>,
     ) -> Result<String, String> {
         wire::analyze_bacnet_ip_packet_impl(params.0)
+    }
+
+    #[tool(description = "List pcap capture interfaces if feature enabled.")]
+    async fn list_pcap_interfaces(
+        &self,
+        params: Parameters<pcap_tools::ListPcapInterfacesParams>,
+    ) -> Result<String, String> {
+        pcap_tools::list_pcap_interfaces_impl(params.0)
     }
 
     // --- Local object tools ---

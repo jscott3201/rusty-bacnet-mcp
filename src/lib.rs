@@ -9,6 +9,7 @@
 //! - `mcp` — MCP server module (`mcp`) plus auth middleware. Default.
 //! - `bin` — pulls in `mcp` plus the `bacnet-mcp` CLI binary entry point.
 //! - `sc` — enables BACnet/SC TLS WebSocket runtime support.
+//! - `pcap` — enables BACnet/IP packet capture discovery/analysis helpers.
 //!
 //! # Always available (no MCP/web dependencies)
 //!
