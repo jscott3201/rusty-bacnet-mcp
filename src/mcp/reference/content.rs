@@ -161,6 +161,7 @@ Tool families:
     analyze_bacnet_ip_packet decodes one B/IP payload or captured frame.
     list_pcap_interfaces lists capture devices when built with feature pcap.
     analyze_pcap_file summarizes offline B/IP pcaps when built with feature pcap.
+    start_pcap_capture and read_pcap_capture manage bounded live B/IP capture summaries.
 
   local objects:
     list_local_objects returns a bounded local DB view; set limit when needed.

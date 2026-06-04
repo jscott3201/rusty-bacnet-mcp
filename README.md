@@ -139,7 +139,9 @@ Core tool groups:
   `write_schedule_exceptions`
 - Trends: `get_trend_log_info`, `read_trend_log`
 - Diagnostics: `ping_device`, `probe_bbmd`, `analyze_bacnet_ip_packet`,
-  `list_pcap_interfaces`, `analyze_pcap_file` with the `pcap` feature
+  `list_pcap_interfaces`, `analyze_pcap_file`, `start_pcap_capture`,
+  `stop_pcap_capture`, `list_pcap_captures`, `read_pcap_capture` with the
+  `pcap` feature
 - Local objects: `list_local_objects`, `read_local_property`,
   `write_local_property`, `create_local_object`, `delete_local_object`
 
@@ -226,6 +228,14 @@ BACNET_MCP_DOCKER_FEATURES=bin,sc \
   scripts/docker-build.sh
 ```
 
+For pcap-enabled Linux images, use the Alpine runtime target:
+
+```bash
+BACNET_MCP_DOCKER_TARGET=runtime \
+BACNET_MCP_DOCKER_FEATURES=bin,sc,pcap \
+  scripts/docker-build.sh
+```
+
 Run with host networking for B/IP broadcast discovery:
 
 ```bash
@@ -279,6 +289,8 @@ Optional BACnet/IP capture helpers are available with `--features bin,sc,pcap`.
 The default binary build does not pull `pcap` in. `analyze_pcap_file` reads
 offline pcap files with Ethernet, raw IPv4, BSD null, or Linux SLL datalinks
 and returns bounded BACnet/IP service, peer, BVLC, and decode-error summaries.
+Live capture sessions use bounded packet counts, a bounded recent-packet ring,
+and the default BPF `udp port 47808`.
 
 ## Built On
 

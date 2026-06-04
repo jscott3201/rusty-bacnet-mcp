@@ -9,6 +9,7 @@ pub mod diagnostics;
 pub mod discovery;
 pub mod files;
 pub mod objects;
+pub mod pcap_live;
 pub mod pcap_tools;
 pub mod points;
 pub mod properties;
@@ -341,6 +342,49 @@ impl GatewayMcp {
         {
             pcap_tools::analyze_pcap_file_impl(params)
         }
+    }
+
+    #[tool(description = "Start bounded B/IP pcap capture.")]
+    async fn start_pcap_capture(
+        &self,
+        params: Parameters<pcap_live::StartPcapCaptureParams>,
+    ) -> Result<String, String> {
+        let state = self.state.clone();
+        let params = params.0;
+        #[cfg(feature = "pcap")]
+        {
+            tokio::task::spawn_blocking(move || pcap_live::start_pcap_capture_impl(&state, params))
+                .await
+                .map_err(|e| format!("pcap capture start task failed: {e}"))?
+        }
+        #[cfg(not(feature = "pcap"))]
+        {
+            pcap_live::start_pcap_capture_impl(&state, params)
+        }
+    }
+
+    #[tool(description = "Stop pcap capture.")]
+    async fn stop_pcap_capture(
+        &self,
+        params: Parameters<pcap_live::StopPcapCaptureParams>,
+    ) -> Result<String, String> {
+        pcap_live::stop_pcap_capture_impl(&self.state, params.0)
+    }
+
+    #[tool(description = "List pcap captures.")]
+    async fn list_pcap_captures(
+        &self,
+        params: Parameters<pcap_live::ListPcapCapturesParams>,
+    ) -> Result<String, String> {
+        pcap_live::list_pcap_captures_impl(&self.state, params.0)
+    }
+
+    #[tool(description = "Read pcap capture summary.")]
+    async fn read_pcap_capture(
+        &self,
+        params: Parameters<pcap_live::ReadPcapCaptureParams>,
+    ) -> Result<String, String> {
+        pcap_live::read_pcap_capture_impl(&self.state, params.0)
     }
 
     // --- Local object tools ---

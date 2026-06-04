@@ -159,7 +159,7 @@ fn bounded_limit(
 }
 
 #[cfg(feature = "pcap")]
-fn wire_input_for_datalink(linktype: pcap::Linktype) -> Result<WireInputKind, String> {
+pub(crate) fn wire_input_for_datalink(linktype: pcap::Linktype) -> Result<WireInputKind, String> {
     if linktype == pcap::Linktype::ETHERNET {
         Ok(WireInputKind::Ethernet)
     } else if linktype == pcap::Linktype::NULL {
@@ -177,7 +177,7 @@ fn wire_input_for_datalink(linktype: pcap::Linktype) -> Result<WireInputKind, St
 }
 
 #[cfg(feature = "pcap")]
-fn datalink_label(linktype: pcap::Linktype) -> String {
+pub(crate) fn datalink_label(linktype: pcap::Linktype) -> String {
     if linktype == pcap::Linktype::ETHERNET {
         "ETHERNET(1)".to_string()
     } else if linktype == pcap::Linktype::NULL {
