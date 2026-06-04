@@ -48,9 +48,7 @@ impl GatewayMcp {
 
     // --- Discovery tools ---
 
-    #[tool(
-        description = "Manually register a remote BACnet device by instance and IP:port address, without requiring WhoIs/IAm discovery."
-    )]
+    #[tool(description = "Manually add a BACnet device instance at an IP:port address.")]
     async fn register_device(
         &self,
         params: Parameters<discovery::RegisterDeviceParams>,
@@ -58,9 +56,7 @@ impl GatewayMcp {
         discovery::register_device_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Discover BACnet devices on the network by sending a WhoIs broadcast. Returns a list of devices that respond with IAm."
-    )]
+    #[tool(description = "Broadcast WhoIs and register devices that answer with IAm.")]
     async fn discover_devices(
         &self,
         params: Parameters<discovery::DiscoverParams>,
@@ -68,16 +64,12 @@ impl GatewayMcp {
         discovery::discover_devices_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "List all previously discovered BACnet devices from the device table. No network traffic is generated."
-    )]
+    #[tool(description = "List cached discovered devices without network traffic.")]
     async fn list_known_devices(&self) -> Result<String, String> {
         discovery::list_known_devices_impl(&self.state).await
     }
 
-    #[tool(
-        description = "Get detailed information about a specific BACnet device by reading its Device object properties (name, vendor, model, firmware, etc.)."
-    )]
+    #[tool(description = "Read common Device object identity properties for one device.")]
     async fn get_device_info(
         &self,
         params: Parameters<discovery::DeviceInfoParams>,
@@ -87,9 +79,7 @@ impl GatewayMcp {
 
     // --- Property tools ---
 
-    #[tool(
-        description = "Read a property from a remote BACnet device. Specify the device instance, object type and instance, and property name."
-    )]
+    #[tool(description = "Read one property from one object on a discovered remote device.")]
     async fn read_property(
         &self,
         params: Parameters<properties::ReadPropertyParams>,
@@ -98,7 +88,7 @@ impl GatewayMcp {
     }
 
     #[tool(
-        description = "Write a value to a property on a remote BACnet device. Pass `dry_run: true` to validate against the gateway's safety policy and write an audit entry without sending the WriteProperty APDU. The layered policy enforces object-type allow/deny lists, per-object lists, and a priority floor (default 9 — priorities 1–8 are reserved for life-safety per ASHRAE 135-2020)."
+        description = "Safety-gated remote WriteProperty; use dry_run to validate and audit only."
     )]
     async fn write_property(
         &self,
@@ -107,9 +97,7 @@ impl GatewayMcp {
         properties::write_property_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Release a priority slot on a commandable BACnet object by writing NULL at that priority. The object falls back to the next-highest active priority — or to relinquish-default if no other slots are taken. Subject to the same safety policy as write_property."
-    )]
+    #[tool(description = "Safety-gated write of NULL to release one command priority slot.")]
     async fn relinquish_at_priority(
         &self,
         params: Parameters<properties::RelinquishParams>,
@@ -119,9 +107,7 @@ impl GatewayMcp {
 
     // --- Bulk read tools (RPM-backed) ---
 
-    #[tool(
-        description = "Read multiple properties from one or more objects on a remote BACnet device in a single round-trip via ReadPropertyMultiple. Cuts latency 5–10× over sequential read_property calls and is the primary tool for bulk discovery, override audits, and rich object snapshots. Use 'all' / 'required' / 'optional' as the property name to fetch every property the device exposes for that object."
-    )]
+    #[tool(description = "Read many object properties in one ReadPropertyMultiple request.")]
     async fn read_property_multiple(
         &self,
         params: Parameters<bulk::ReadPropertyMultipleParams>,
@@ -130,7 +116,7 @@ impl GatewayMcp {
     }
 
     #[tool(
-        description = "Read the 16-slot priority array, present-value, and relinquish-default for a commandable BACnet object in one round-trip. Identifies the highest active priority slot — answers 'who is overriding this point?' which is the central question for override audits and remediation workflows."
+        description = "Read present-value, priority-array, and relinquish-default for one object."
     )]
     async fn read_priority_array(
         &self,
@@ -139,9 +125,7 @@ impl GatewayMcp {
         bulk::read_priority_array_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "List every BACnet object on a remote device with its identifier and object-name, by reading Device.object_list and then chunked object-name reads via RPM. Returns up to `limit` objects (default 500, hard cap 5000). Useful as the first step in any whole-device audit or schema-aware tool flow."
-    )]
+    #[tool(description = "List object identifiers and names from a remote Device.object-list.")]
     async fn enumerate_objects(
         &self,
         params: Parameters<bulk::EnumerateObjectsParams>,
@@ -149,9 +133,7 @@ impl GatewayMcp {
         bulk::enumerate_objects_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Read a remote device's capability profile in one RPM round-trip: vendor info, firmware/protocol revisions, max APDU, segmentation support, services-supported bitstring, object-types-supported bitstring. Lets an agent reason about which BACnet services and object types are actually available before it tries to call them."
-    )]
+    #[tool(description = "Read a remote device capability profile for service planning.")]
     async fn get_device_capabilities(
         &self,
         params: Parameters<bulk::DeviceCapabilitiesParams>,
@@ -161,9 +143,7 @@ impl GatewayMcp {
 
     // --- Alarm + event tools ---
 
-    #[tool(
-        description = "List active alarms on a remote device via the BACnet GetAlarmSummary service (ASHRAE 135-2020 Clause 13.7). Returns one line per alarm: object identifier, alarm state, and which transitions have already been acknowledged. Read-only. Use this as the cheap first call when triaging incidents; switch to get_event_information for richer per-event metadata."
-    )]
+    #[tool(description = "List active alarms with object, state, and acked transitions.")]
     async fn get_alarm_summary(
         &self,
         params: Parameters<alarms::AlarmSummaryParams>,
@@ -172,7 +152,7 @@ impl GatewayMcp {
     }
 
     #[tool(
-        description = "Read active events on a remote device via GetEventInformation (Clause 13.10). Modern replacement for GetAlarmSummary — returns timestamps for each transition (off-normal, fault, normal), notify type, event-enable bits, per-transition priorities, and notification class. Pass `after: 'type:instance'` to page when the device's response sets more_events. Read-only."
+        description = "Read active event metadata, transition times, priorities, and paging state."
     )]
     async fn get_event_information(
         &self,
@@ -181,9 +161,7 @@ impl GatewayMcp {
         alarms::get_event_information_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Acknowledge a pending event transition on a remote device (Clause 13.6). Pass the event's object identifier, the EventState being acked (raw enumerated: 0=normal, 1=fault, 2=offnormal, ...), and a free-text source identifier. Goes through the gateway's safety policy and audit log the same way write_property does. Pass `dry_run: true` to validate without sending the APDU."
-    )]
+    #[tool(description = "Safety-gated alarm/event acknowledgement; use dry_run to validate.")]
     async fn acknowledge_alarm(
         &self,
         params: Parameters<alarms::AcknowledgeAlarmParams>,
@@ -193,9 +171,7 @@ impl GatewayMcp {
 
     // --- Schedule tools ---
 
-    #[tool(
-        description = "Read scalar metadata from a BACnet Schedule object in one RPM round-trip: object-name, present-value, schedule-default, effective-period, list-of-object-property-references (what this schedule writes to), status flags, reliability. Read-only. Use read_schedule_weekly and read_schedule_exceptions for the weekly-schedule and exception-schedule arrays — those are kept off this RPM so a populated array can't blow Max-APDU on small devices and take down the scalar fetch."
-    )]
+    #[tool(description = "Read scalar metadata from one Schedule object.")]
     async fn read_schedule(
         &self,
         params: Parameters<schedules::ReadScheduleParams>,
@@ -203,9 +179,7 @@ impl GatewayMcp {
         schedules::read_schedule_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Read the weekly-schedule property of a BACnet Schedule object — a 7-element array (Mon..Sun) of (time, value) pairs that fire each day. Single ReadProperty so a populated array can't take down a bundled scalar fetch. Values are decoded via bacnet-services 0.9 codecs; the polymorphic value field of each time-value pair is rendered through the same decoder used for scalar property values."
-    )]
+    #[tool(description = "Read a Schedule weekly-schedule array as decoded time/value entries.")]
     async fn read_schedule_weekly(
         &self,
         params: Parameters<schedules::ReadScheduleWeeklyParams>,
@@ -213,9 +187,7 @@ impl GatewayMcp {
         schedules::read_schedule_weekly_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Read the exception-schedule property of a BACnet Schedule object — a list of special events, each defining a period (specific date, date range, week-and-day pattern, or calendar-object reference), its own (time, value) entries, and a priority for conflict resolution against the weekly schedule. Single ReadProperty. Decoded via bacnet-services 0.9 codecs."
-    )]
+    #[tool(description = "Read a Schedule exception-schedule list as decoded special events.")]
     async fn read_schedule_exceptions(
         &self,
         params: Parameters<schedules::ReadScheduleExceptionsParams>,
@@ -223,9 +195,7 @@ impl GatewayMcp {
         schedules::read_schedule_exceptions_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Replace the entire weekly-schedule of a BACnet Schedule object atomically. Takes 7 lists (Mon..Sun) of (time, value) entries. Values use tagged JSON: {\"real\": 72.0}, {\"boolean\": true}, {\"unsigned\": 3}, or {\"null\": null}. Times are 'HH:MM' or 'HH:MM:SS'. Whole-array replacement matches the WriteProperty semantics for this property — there's no per-element write in the spec. Routes through the same safety policy + audit log as write_property. Pass dry_run: true to validate without sending. v1 limitation: only Real / Boolean / Unsigned / Null value types (other primitives v2)."
-    )]
+    #[tool(description = "Safety-gated whole-array replacement for a Schedule weekly-schedule.")]
     async fn write_schedule_weekly(
         &self,
         params: Parameters<schedule_write::WriteScheduleWeeklyParams>,
@@ -233,9 +203,7 @@ impl GatewayMcp {
         schedule_write::write_schedule_weekly_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Replace the entire exception-schedule of a BACnet Schedule object atomically. Each event has a period (tagged: {\"date\": \"YYYY-MM-DD\"} optionally with '-Mon..-Sun' suffix, or {\"week_n_day\": \"month/week/dow\"} pattern matching format_week_n_day output), a list of time-values, and a priority 1..=16 for conflict resolution against the weekly schedule. Whole-list replacement (WriteProperty semantics). Routes through write_property's safety policy + audit log. Pass dry_run: true to validate without sending. v1 limitations: only Date and WeekNDay periods (DateRange / CalendarReference v2); only Real / Boolean / Unsigned / Null value types; only concrete dates (sentinel month/day patterns v2)."
-    )]
+    #[tool(description = "Safety-gated whole-list replacement for a Schedule exception-schedule.")]
     async fn write_schedule_exceptions(
         &self,
         params: Parameters<schedule_write::WriteScheduleExceptionsParams>,
@@ -245,9 +213,7 @@ impl GatewayMcp {
 
     // --- Trend log tools (ReadRange-backed) ---
 
-    #[tool(
-        description = "Read TrendLog metadata in one RPM round-trip: object-name, log-enable, log-interval, buffer-size, record-count, total-record-count, log-device-object-property (the source the trend is sampling), start/stop time, logging-type, status flags, event state. Use this before calling read_trend_log to know how many records exist and how to range-select them."
-    )]
+    #[tool(description = "Read TrendLog metadata needed before choosing a log-buffer window.")]
     async fn get_trend_log_info(
         &self,
         params: Parameters<trend::TrendLogInfoParams>,
@@ -255,9 +221,7 @@ impl GatewayMcp {
         trend::get_trend_log_info_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Read a window of records from a TrendLog's log-buffer via the BACnet ReadRange service. Three range modes per ASHRAE 135-2020 Clause 15.8: 'by_position' (1-based array index), 'by_sequence' (sequence number), 'by_time' ('YYYY-MM-DD HH:MM:SS'). `count` is signed — positive reads forward, negative reads backward. Records are decoded into timestamp + value + optional status flags."
-    )]
+    #[tool(description = "Read a TrendLog log-buffer window by position, sequence, or time.")]
     async fn read_trend_log(
         &self,
         params: Parameters<trend::ReadTrendLogParams>,
@@ -267,9 +231,7 @@ impl GatewayMcp {
 
     // --- Diagnostic tools ---
 
-    #[tool(
-        description = "Ping a remote BACnet device by issuing one or more confirmed ReadProperty(Device, system-status) round-trips and reporting per-attempt latency plus min/avg/max/loss summary. The BACnet equivalent of ping(8): exercises the full TSM + transport path so a successful response confirms the device is reachable as a BACnet peer, not just IP-reachable. Read-only. count default 1, max 10; timeout_seconds default uses the client's apdu_timeout, max 30; interval_ms default 0, max 5000."
-    )]
+    #[tool(description = "Measure BACnet round-trip reachability with Device.system-status reads.")]
     async fn ping_device(
         &self,
         params: Parameters<diagnostics::PingDeviceParams>,
@@ -277,9 +239,7 @@ impl GatewayMcp {
         diagnostics::ping_device_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Probe a BACnet/IP BBMD by reading its Broadcast Distribution Table and Foreign Device Table (Annex J). Returns the BDT (peer BBMDs this BBMD forwards broadcasts to, with broadcast masks) and the FDT (foreign devices registered with this BBMD, with TTL and remaining lifetime). The two reads run concurrently. Read-only. Target is `ip:port` since BBMDs are routing infrastructure addressed by IP, not BACnet device instance. timeout_seconds default uses the transport's internal value, max 30."
-    )]
+    #[tool(description = "Read a BACnet/IP BBMD's BDT and FDT tables by IP:port.")]
     async fn probe_bbmd(
         &self,
         params: Parameters<diagnostics::ProbeBbmdParams>,
@@ -289,9 +249,7 @@ impl GatewayMcp {
 
     // --- Local object tools ---
 
-    #[tool(
-        description = "List objects in the gateway's local BACnet object database. Optionally filter by object type."
-    )]
+    #[tool(description = "List gateway-local BACnet objects, optionally filtered by type.")]
     async fn list_local_objects(
         &self,
         params: Parameters<objects::ListObjectsParams>,
@@ -299,9 +257,7 @@ impl GatewayMcp {
         objects::list_local_objects_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Read a property from the gateway's local object database. No network traffic."
-    )]
+    #[tool(description = "Read one property from a gateway-local object.")]
     async fn read_local_property(
         &self,
         params: Parameters<objects::ReadLocalPropertyParams>,
@@ -309,9 +265,7 @@ impl GatewayMcp {
         objects::read_local_property_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Write a value to a property in the gateway's local object database. No network traffic."
-    )]
+    #[tool(description = "Safety-gated write to a gateway-local object property.")]
     async fn write_local_property(
         &self,
         params: Parameters<objects::WriteLocalPropertyParams>,
@@ -319,9 +273,7 @@ impl GatewayMcp {
         objects::write_local_property_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Create a new object in the gateway's local BACnet database. Supports analog, binary, multi-state, and value types."
-    )]
+    #[tool(description = "Create an analog, binary, multi-state, or value object locally.")]
     async fn create_local_object(
         &self,
         params: Parameters<objects::CreateLocalObjectParams>,
@@ -329,9 +281,7 @@ impl GatewayMcp {
         objects::create_local_object_impl(&self.state, params.0).await
     }
 
-    #[tool(
-        description = "Delete an object from the gateway's local BACnet database. Cannot delete the Device object."
-    )]
+    #[tool(description = "Delete a gateway-local object; the Device object is protected.")]
     async fn delete_local_object(
         &self,
         params: Parameters<objects::DeleteLocalObjectParams>,

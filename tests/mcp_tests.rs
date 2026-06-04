@@ -686,7 +686,7 @@ async fn allow_object_types_overrides_default_allow_list() {
 #[test]
 fn reference_resources_list() {
     let resources = reference::reference_resources();
-    assert_eq!(resources.len(), 10);
+    assert_eq!(resources.len(), 11);
     for r in &resources {
         assert!(
             r.uri.starts_with("bacnet://reference/"),
@@ -725,6 +725,14 @@ fn reference_templates_list() {
     let templates = reference::reference_templates();
     assert_eq!(templates.len(), 1);
     assert!(templates[0].uri_template.contains("{type}"));
+}
+
+#[test]
+fn reference_read_tool_guide() {
+    let content = reference::read_reference("bacnet://reference/tool-guide").unwrap();
+    assert!(content.contains("Token-efficient usage"));
+    assert!(content.contains("read_property_multiple"));
+    assert!(content.contains("dry_run"));
 }
 
 #[test]
