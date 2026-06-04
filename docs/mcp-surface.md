@@ -88,6 +88,8 @@ commonly exceed APDU limits. COV polling is bounded by `max_events`.
   frame into compact BVLC/NPDU/APDU layers.
 - `list_pcap_interfaces`: list host capture interfaces when the `pcap` feature
   is enabled.
+- `analyze_pcap_file`: read an offline pcap file and summarize BACnet/IP
+  services, BVLC functions, peers, decoded samples, and decode errors.
 
 `probe_bbmd` is intentionally unavailable on BACnet/SC because SC has no BBMD
 tables.
@@ -101,6 +103,10 @@ Detailed mode adds bounded layer lines with `max_detail_lines`.
 `list_pcap_interfaces` is feature-gated because libpcap is a platform-level
 dependency. It returns bounded, sorted interface rows and can omit addresses
 for a shorter listing.
+
+`analyze_pcap_file` is also feature-gated. It opens local pcap files with
+Ethernet, BSD null, raw IPv4, or Linux SLL datalinks and scans a bounded packet
+count. The report is deterministic and row-capped for MCP use.
 
 ## Local Objects
 

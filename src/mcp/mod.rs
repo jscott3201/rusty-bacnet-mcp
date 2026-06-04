@@ -325,6 +325,14 @@ impl GatewayMcp {
         pcap_tools::list_pcap_interfaces_impl(params.0)
     }
 
+    #[tool(description = "Analyze an offline pcap file for BACnet/IP traffic.")]
+    async fn analyze_pcap_file(
+        &self,
+        params: Parameters<pcap_tools::AnalyzePcapFileParams>,
+    ) -> Result<String, String> {
+        pcap_tools::analyze_pcap_file_impl(params.0)
+    }
+
     // --- Local object tools ---
 
     #[tool(description = "List bounded gateway-local BACnet objects, optionally filtered by type.")]

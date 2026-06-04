@@ -160,6 +160,7 @@ Tool families:
     probe_bbmd reads BBMD BDT/FDT tables by IP:port.
     analyze_bacnet_ip_packet decodes one B/IP payload or captured frame.
     list_pcap_interfaces lists capture devices when built with feature pcap.
+    analyze_pcap_file summarizes offline B/IP pcaps when built with feature pcap.
 
   local objects:
     list_local_objects returns a bounded local DB view; set limit when needed.
