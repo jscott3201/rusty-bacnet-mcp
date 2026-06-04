@@ -19,6 +19,7 @@ const MAX_STREAM_OCTETS: u32 = 2_048;
 const DEFAULT_RECORD_COUNT: u32 = 1;
 const MAX_RECORD_COUNT: u32 = 16;
 const MAX_DISPLAY_BYTES: usize = 2_048;
+const MAX_RECORD_DISPLAY_BYTES_TOTAL: usize = 2_048;
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -160,22 +161,37 @@ fn format_file_read_ack(
             file_record_data,
         } => {
             let next_record = file_start_record.saturating_add(*returned_record_count as i32);
+            let total_bytes = file_record_data
+                .iter()
+                .fold(0usize, |acc, record| acc.saturating_add(record.len()));
             let mut out = format!(
-                "file:{} on device:{} record start={} returned={} records={} eof={} next_record={}\n",
+                "file:{} on device:{} record start={} returned={} records={} total_bytes={} eof={} next_record={}",
                 file_instance,
                 device_instance,
                 file_start_record,
                 returned_record_count,
                 file_record_data.len(),
+                total_bytes,
                 ack.end_of_file,
                 next_record
             );
+            if total_bytes > MAX_RECORD_DISPLAY_BYTES_TOTAL {
+                out.push_str(&format!(
+                    " display_cap_bytes={MAX_RECORD_DISPLAY_BYTES_TOTAL}"
+                ));
+            }
+            out.push('\n');
+
+            let mut remaining_display_bytes = MAX_RECORD_DISPLAY_BYTES_TOTAL;
             for (i, record) in file_record_data.iter().enumerate() {
+                let display_limit = remaining_display_bytes.min(MAX_DISPLAY_BYTES);
+                let displayed = record.len().min(display_limit);
+                remaining_display_bytes = remaining_display_bytes.saturating_sub(displayed);
                 out.push_str(&format!(
                     "  [{}] bytes={} {}\n",
                     i,
                     record.len(),
-                    format_payload(record, format)
+                    format_payload_limited(record, format, display_limit)
                 ));
             }
             out
@@ -184,9 +200,21 @@ fn format_file_read_ack(
 }
 
 fn format_payload(bytes: &[u8], format: FilePayloadFormat) -> String {
-    let visible_len = bytes.len().min(MAX_DISPLAY_BYTES);
+    format_payload_limited(bytes, format, MAX_DISPLAY_BYTES)
+}
+
+fn format_payload_limited(
+    bytes: &[u8],
+    format: FilePayloadFormat,
+    max_visible_bytes: usize,
+) -> String {
+    let visible_len = bytes.len().min(max_visible_bytes);
     let visible = &bytes[..visible_len];
     let omitted = bytes.len().saturating_sub(visible_len);
+
+    if visible.is_empty() && !bytes.is_empty() {
+        return format!("payload=<omitted> truncated_bytes={omitted}");
+    }
 
     let mut rendered = match format {
         FilePayloadFormat::Auto => match printable_text(visible) {
@@ -375,9 +403,33 @@ mod tests {
             },
         };
         let out = format_file_read_ack(1234, 9, FilePayloadFormat::Auto, &ack);
-        assert!(out.contains("record start=4 returned=2 records=2 eof=false next_record=6"));
+        assert!(
+            out.contains(
+                "record start=4 returned=2 records=2 total_bytes=7 eof=false next_record=6"
+            )
+        );
         assert!(out.contains(r#"[0] bytes=5 text="first""#));
         assert!(out.contains("[1] bytes=2 hex=aabb"));
+    }
+
+    #[test]
+    fn format_record_ack_caps_aggregate_display_bytes() {
+        let ack = AtomicReadFileAck {
+            end_of_file: false,
+            access: FileReadAckMethod::Record {
+                file_start_record: 0,
+                returned_record_count: 2,
+                file_record_data: vec![
+                    vec![b'a'; MAX_RECORD_DISPLAY_BYTES_TOTAL + 3],
+                    b"later".to_vec(),
+                ],
+            },
+        };
+        let out = format_file_read_ack(1234, 9, FilePayloadFormat::Text, &ack);
+        assert!(out.contains("total_bytes=2056"));
+        assert!(out.contains("display_cap_bytes=2048"));
+        assert!(out.contains("truncated_bytes=3"));
+        assert!(out.contains("[1] bytes=5 payload=<omitted> truncated_bytes=5"));
     }
 
     #[test]
