@@ -3,8 +3,8 @@
 # Patterns adopted from selene-db: PR-driven trigger, draft-PR skip, Cargo.lock
 # guards on advisory checks, file-size cap (700 LOC) and no-secret scan as
 # dedicated jobs, --locked flags for reproducibility, minimum-privilege
-# permissions. Multi-OS test matrix retained because BACnet UDP socket behavior
-# differs across platforms.
+# permissions. Multi-OS test matrix is retained for main, tags, and manual
+# runs; development PRs stay lean and skip the OS test matrix.
 #
 # Security notes:
 #   - No `${{ github.event.* }}` interpolations appear in any `run:` command;
@@ -61,7 +61,12 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
-    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    if: >-
+      (github.event.pull_request.draft == false || github.event_name != 'pull_request') &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.ref, 'refs/tags/') ||
+       github.ref == 'refs/heads/main' ||
+       github.base_ref == 'main')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
