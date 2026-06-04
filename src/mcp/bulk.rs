@@ -22,135 +22,18 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::parse::{
-    decode_raw_property_to_json_with_context, object_type_name, parse_object_type,
-    parse_property_name, property_name,
+    decode_raw_property_to_json_with_context, object_type_name, parse_object_type, property_name,
 };
 use crate::state::GatewayState;
 
 mod compact;
+mod rpm;
 
 use compact::format_compact_object_list;
-
-// ─── read_property_multiple ─────────────────────────────────────────────────
-
-/// Property identifier as the schema documents it: either a string name
-/// (`"present-value"`) or a numeric raw id (`87`). The `#[serde(untagged)]`
-/// enum lets MCP clients send either JSON shape; both round-trip through
-/// `parse_property_name`.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum PropertyId {
-    Name(String),
-    Number(u32),
-}
-
-impl PropertyId {
-    fn resolve(&self) -> Result<bacnet_types::enums::PropertyIdentifier, String> {
-        match self {
-            PropertyId::Name(s) => parse_property_name(s),
-            PropertyId::Number(n) => Ok(bacnet_types::enums::PropertyIdentifier::from_raw(*n)),
-        }
-    }
-}
-
-/// One object + the list of properties to read on it.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct PropertyRequest {
-    /// Property name (e.g. "present-value") or numeric raw id (e.g. 87).
-    /// Both JSON shapes are accepted.
-    #[schemars(description = "Property name (string) or numeric raw id (integer)")]
-    pub property: PropertyId,
-    /// Optional array index for array properties (e.g. priority-array slot).
-    #[schemars(description = "Optional array index (1-based)")]
-    pub array_index: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ObjectRequest {
-    #[schemars(description = "Object type (e.g. 'analog-output', 'device')")]
-    pub object_type: String,
-    #[schemars(description = "Object instance number")]
-    pub object_instance: u32,
-    /// At least one property must be specified per object. Use the special
-    /// names `all`, `required`, or `optional` (BACnet abstract aggregate
-    /// property identifiers) to read every property the device exposes.
-    #[schemars(
-        description = "Properties to read on this object (must be non-empty; use 'all' / 'required' / 'optional' to fetch every property)"
-    )]
-    pub properties: Vec<PropertyRequest>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReadPropertyMultipleParams {
-    #[schemars(description = "Device instance number (must be in device table)")]
-    pub device_instance: u32,
-    #[schemars(description = "List of objects + properties to read (cannot be empty)")]
-    pub objects: Vec<ObjectRequest>,
-}
-
-/// `read_property_multiple` impl — wires RPM through `GatewayState`.
-pub async fn read_property_multiple_impl(
-    state: &GatewayState,
-    params: ReadPropertyMultipleParams,
-) -> Result<String, String> {
-    if params.objects.is_empty() {
-        return Err("'objects' must contain at least one entry".into());
-    }
-    let client = state.require_client()?;
-    let entry = state.resolve_device(params.device_instance).await?;
-
-    let specs = build_rpm_specs(&params.objects)?;
-    let ack = client
-        .read_property_multiple(&entry.mac_address, specs)
-        .await
-        .map_err(|e| format!("ReadPropertyMultiple: {e}"))?;
-
-    Ok(format_rpm_ack(&ack))
-}
-
-fn build_rpm_specs(objects: &[ObjectRequest]) -> Result<Vec<ReadAccessSpecification>, String> {
-    let mut specs = Vec::with_capacity(objects.len());
-    for obj in objects {
-        if obj.properties.is_empty() {
-            return Err(format!(
-                "object {}:{} has no properties listed",
-                obj.object_type, obj.object_instance
-            ));
-        }
-        let obj_type = parse_object_type(&obj.object_type)?;
-        let oid =
-            ObjectIdentifier::new(obj_type, obj.object_instance).map_err(|e| format!("{e}"))?;
-        let mut prop_refs = Vec::with_capacity(obj.properties.len());
-        for p in &obj.properties {
-            let prop_id = p.property.resolve()?;
-            prop_refs.push(PropertyReference {
-                property_identifier: prop_id,
-                property_array_index: p.array_index,
-            });
-        }
-        specs.push(ReadAccessSpecification {
-            object_identifier: oid,
-            list_of_property_references: prop_refs,
-        });
-    }
-    Ok(specs)
-}
-
-fn format_rpm_ack(ack: &bacnet_services::rpm::ReadPropertyMultipleACK) -> String {
-    let mut out = String::new();
-    for result in &ack.list_of_read_access_results {
-        let oid = result.object_identifier;
-        out.push_str(&format!(
-            "{}:{}\n",
-            object_type_name(oid.object_type()),
-            oid.instance_number(),
-        ));
-        for elem in &result.list_of_results {
-            out.push_str(&format!("  {}", format_result_element(elem)));
-        }
-    }
-    out
-}
+pub use rpm::{
+    ObjectRequest, PropertyId, PropertyRequest, ReadPropertyMultipleParams, RpmResponseMode,
+    read_property_multiple_impl,
+};
 
 fn format_result_element(elem: &ReadResultElement) -> String {
     let prop = property_name(elem.property_identifier);
@@ -601,77 +484,6 @@ pub async fn get_device_capabilities_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn build_specs_rejects_empty_properties() {
-        let req = vec![ObjectRequest {
-            object_type: "analog-input".into(),
-            object_instance: 1,
-            properties: vec![],
-        }];
-        let err = build_rpm_specs(&req).unwrap_err();
-        assert!(err.contains("no properties"));
-    }
-
-    #[test]
-    fn build_specs_handles_array_index() {
-        let req = vec![ObjectRequest {
-            object_type: "analog-output".into(),
-            object_instance: 1,
-            properties: vec![PropertyRequest {
-                property: PropertyId::Name("priority-array".into()),
-                array_index: Some(8),
-            }],
-        }];
-        let specs = build_rpm_specs(&req).unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].list_of_property_references.len(), 1);
-        assert_eq!(
-            specs[0].list_of_property_references[0].property_array_index,
-            Some(8)
-        );
-    }
-
-    #[test]
-    fn build_specs_unknown_object_type_errors() {
-        let req = vec![ObjectRequest {
-            object_type: "nonexistent-type".into(),
-            object_instance: 1,
-            properties: vec![PropertyRequest {
-                property: PropertyId::Name("present-value".into()),
-                array_index: None,
-            }],
-        }];
-        let err = build_rpm_specs(&req).unwrap_err();
-        assert!(err.contains("nonexistent-type"));
-    }
-
-    #[test]
-    fn property_id_resolves_string_or_number() {
-        // String form — canonical name.
-        assert_eq!(
-            PropertyId::Name("present-value".into()).resolve().unwrap(),
-            PropertyIdentifier::PRESENT_VALUE,
-        );
-        // Number form — raw id, exactly what the docs/schema promise.
-        assert_eq!(
-            PropertyId::Number(87).resolve().unwrap(),
-            PropertyIdentifier::PRIORITY_ARRAY,
-        );
-    }
-
-    #[test]
-    fn property_id_deserializes_from_string_and_number_json() {
-        // Serde must accept both JSON shapes per the untagged enum contract.
-        // This test guards against regressions that retype the field as a
-        // bare String (which was the original Codex callout).
-        let from_string: PropertyId =
-            serde_json::from_str("\"present-value\"").expect("string form");
-        assert!(matches!(from_string, PropertyId::Name(ref s) if s == "present-value"));
-
-        let from_number: PropertyId = serde_json::from_str("87").expect("number form");
-        assert!(matches!(from_number, PropertyId::Number(87)));
-    }
 
     #[test]
     fn enumerate_params_default_to_compact_names_omitted() {

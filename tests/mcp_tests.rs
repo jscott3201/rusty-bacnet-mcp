@@ -190,6 +190,7 @@ async fn rpm_empty_objects_rejected_pre_dispatch() {
         bulk::ReadPropertyMultipleParams {
             device_instance: 1234,
             objects: vec![],
+            response_mode: bulk::RpmResponseMode::Compact,
         },
     )
     .await;
@@ -219,6 +220,7 @@ async fn rpm_no_client_after_validation() {
                     array_index: None,
                 }],
             }],
+            response_mode: bulk::RpmResponseMode::Compact,
         },
     )
     .await;

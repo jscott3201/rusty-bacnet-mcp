@@ -173,6 +173,10 @@ Local objects: list_local_objects, read_local_property, write_local_property,
 transport address format: `ip:port` for B/IP, or a 6-byte VMAC such as
 `02:00:00:00:00:10` for BACnet/SC.
 
+`read_property_multiple` defaults to compact output with one line per object,
+bounded scalar rendering, and value/error/missing counts. Set
+`response_mode: "detailed"` only when full decoded property lines are needed.
+
 **Resources**:
 
 - `bacnet://reference/{object-types,properties,units,errors,reliability,priority-array,networking,services,troubleshooting}` — compiled-in reference text.

@@ -1,6 +1,13 @@
+use bacnet_services::rpm::{ReadPropertyMultipleACK, ReadResultElement};
+use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use crate::parse::object_type_name;
+use crate::parse::{decode_raw_property_to_json_with_context, object_type_name, property_name};
+
+const MAX_COMPACT_VALUE_CHARS: usize = 160;
+const MAX_LIST_PREVIEW_ITEMS: usize = 4;
+const MAX_COMPACT_RPM_FIELDS_PER_OBJECT: usize = 64;
+const MAX_COMPACT_RPM_TOTAL_FIELDS: usize = 512;
 
 pub(super) fn format_compact_object_list(
     device_instance: u32,
@@ -31,6 +38,161 @@ pub(super) fn format_compact_object_list(
         ));
     }
     out.push_str("Set include_names=true to fetch object-name values.\n");
+    out
+}
+
+pub(super) fn format_compact_rpm_ack(ack: &ReadPropertyMultipleACK) -> String {
+    if ack.list_of_read_access_results.is_empty() {
+        return "RPM compact: no results\n".to_string();
+    }
+
+    let mut stats = RpmStats::from_ack(ack);
+    let mut out = format!(
+        "RPM compact: {} object(s), {} value(s), {} error(s), {} missing\n",
+        stats.objects, stats.values, stats.errors, stats.missing
+    );
+    for result in &ack.list_of_read_access_results {
+        let oid = result.object_identifier;
+        out.push_str(&format!(
+            "  {}:{}",
+            object_type_name(oid.object_type()),
+            oid.instance_number()
+        ));
+        if result.list_of_results.is_empty() {
+            out.push_str(" (no properties)\n");
+            continue;
+        }
+        let mut shown_for_object = 0usize;
+        let mut omitted_for_object = 0usize;
+        for elem in &result.list_of_results {
+            if stats.rendered_fields >= MAX_COMPACT_RPM_TOTAL_FIELDS
+                || shown_for_object >= MAX_COMPACT_RPM_FIELDS_PER_OBJECT
+            {
+                omitted_for_object += 1;
+                continue;
+            }
+            out.push(' ');
+            out.push_str(&format!(
+                "{}={}",
+                property_label(elem.property_identifier, elem.property_array_index),
+                compact_result_value(elem)
+            ));
+            shown_for_object += 1;
+            stats.rendered_fields += 1;
+        }
+        if omitted_for_object > 0 {
+            out.push_str(&format!(
+                " ... omitted {omitted_for_object} property result(s)"
+            ));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+#[derive(Default)]
+struct RpmStats {
+    objects: usize,
+    values: usize,
+    errors: usize,
+    missing: usize,
+    rendered_fields: usize,
+}
+
+impl RpmStats {
+    fn from_ack(ack: &ReadPropertyMultipleACK) -> Self {
+        let mut stats = Self {
+            objects: ack.list_of_read_access_results.len(),
+            ..Self::default()
+        };
+        for result in &ack.list_of_read_access_results {
+            for elem in &result.list_of_results {
+                if elem.error.is_some() {
+                    stats.errors += 1;
+                } else if elem.property_value.is_some() {
+                    stats.values += 1;
+                } else {
+                    stats.missing += 1;
+                }
+            }
+        }
+        stats
+    }
+}
+
+fn property_label(property: PropertyIdentifier, array_index: Option<u32>) -> String {
+    let idx = array_index.map(|i| format!("[{i}]")).unwrap_or_default();
+    format!("{}{idx}", property_name(property))
+}
+
+fn compact_result_value(elem: &ReadResultElement) -> String {
+    if let Some((class, code)) = elem.error {
+        return format!("err({class:?}/{code:?})");
+    }
+    let Some(bytes) = &elem.property_value else {
+        return "missing".into();
+    };
+    let decoded = decode_raw_property_to_json_with_context(bytes, elem.property_identifier);
+    compact_json_value(&decoded)
+}
+
+fn compact_json_value(decoded: &serde_json::Value) -> String {
+    if decoded.is_null() {
+        return "null".into();
+    }
+    if let Some(name) = decoded.get("name").and_then(|v| v.as_str()) {
+        return truncate_text(name);
+    }
+    let ty = decoded.get("type").and_then(|v| v.as_str());
+    if let Some(value) = decoded.get("value") {
+        return compact_json_inner(value, ty);
+    }
+    compact_json_inner(decoded, None)
+}
+
+fn compact_json_inner(value: &serde_json::Value, value_type: Option<&str>) -> String {
+    match value {
+        serde_json::Value::Null => "null".into(),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => value.to_string(),
+        serde_json::Value::String(s) => compact_string_value(s, value_type),
+        serde_json::Value::Array(items) => compact_json_array(items),
+        serde_json::Value::Object(_) => truncate_text(&value.to_string()),
+    }
+}
+
+fn compact_string_value(value: &str, value_type: Option<&str>) -> String {
+    match value_type {
+        Some("string") | None => quote_json_string(&truncate_text(value)),
+        _ => truncate_text(value),
+    }
+}
+
+fn compact_json_array(items: &[serde_json::Value]) -> String {
+    if items.is_empty() {
+        return "list[0]".into();
+    }
+    let mut preview: Vec<String> = items
+        .iter()
+        .take(MAX_LIST_PREVIEW_ITEMS)
+        .map(compact_json_value)
+        .collect();
+    if items.len() > MAX_LIST_PREVIEW_ITEMS {
+        preview.push(format!("+{} more", items.len() - MAX_LIST_PREVIEW_ITEMS));
+    }
+    format!("list[{}]({})", items.len(), preview.join(","))
+}
+
+fn quote_json_string(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"<invalid>\"".into())
+}
+
+fn truncate_text(raw: &str) -> String {
+    if raw.chars().count() <= MAX_COMPACT_VALUE_CHARS {
+        return raw.to_string();
+    }
+    let keep = MAX_COMPACT_VALUE_CHARS.saturating_sub(3);
+    let mut out: String = raw.chars().take(keep).collect();
+    out.push_str("...");
     out
 }
 
@@ -66,7 +228,8 @@ fn push_range(parts: &mut Vec<String>, start: u32, end: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_types::enums::ObjectType;
+    use bacnet_services::rpm::{ReadAccessResult, ReadPropertyMultipleACK, ReadResultElement};
+    use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 
     #[test]
     fn compact_object_list_groups_types_ranges_and_truncation() {
@@ -98,6 +261,32 @@ mod tests {
         let out = format_compact_object_list(9, &oids, 4);
         assert!(out.contains("  analog-output: 2-4\n"));
         assert!(!out.contains("showing first"));
+    }
+
+    #[test]
+    fn compact_rpm_ack_omits_fields_after_per_object_cap() {
+        let count = MAX_COMPACT_RPM_FIELDS_PER_OBJECT + 2;
+        let ack = ReadPropertyMultipleACK {
+            list_of_read_access_results: vec![ReadAccessResult {
+                object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+                list_of_results: (1..=count)
+                    .map(|idx| ReadResultElement {
+                        property_identifier: PropertyIdentifier::PRESENT_VALUE,
+                        property_array_index: Some(idx as u32),
+                        property_value: None,
+                        error: None,
+                    })
+                    .collect(),
+            }],
+        };
+
+        let out = format_compact_rpm_ack(&ack);
+        assert!(out.contains(&format!(
+            "1 object(s), 0 value(s), 0 error(s), {count} missing"
+        )));
+        assert!(out.contains("present-value[64]=missing"));
+        assert!(!out.contains("present-value[65]=missing"));
+        assert!(out.contains("omitted 2 property result(s)"));
     }
 
     #[test]
