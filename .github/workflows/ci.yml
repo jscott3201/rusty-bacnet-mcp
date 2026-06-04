@@ -15,10 +15,10 @@ name: ci
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, development]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [main]
+    branches: [main, development]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -73,7 +73,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
-      - run: cargo test --features bin,sc --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - run: cargo nextest run --features bin,sc --locked
+      - run: cargo test --doc --features bin,sc --locked
 
   build-bin:
     name: build-bin
