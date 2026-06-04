@@ -12,6 +12,11 @@ use rmcp::model::{Annotated, RawResource, RawResourceTemplate, Resource, Resourc
 pub fn reference_resources() -> Vec<Resource> {
     vec![
         resource(
+            "bacnet://reference/tool-guide",
+            "BACnet MCP Tool Guide",
+            "Compact tool routing, token-efficient workflows, and write-safety posture",
+        ),
+        resource(
             "bacnet://reference/object-types",
             "BACnet Object Types",
             "Index of all 65 BACnet object types with name, category, and purpose",
@@ -125,6 +130,7 @@ pub fn reference_templates() -> Vec<ResourceTemplate> {
 /// Look up reference content by URI.
 pub fn read_reference(uri: &str) -> Option<String> {
     match uri {
+        "bacnet://reference/tool-guide" => Some(content::TOOL_GUIDE.to_string()),
         "bacnet://reference/object-types" => Some(content::OBJECT_TYPES_INDEX.to_string()),
         "bacnet://reference/properties" => Some(content::PROPERTIES.to_string()),
         "bacnet://reference/units" => Some(content::UNITS.to_string()),

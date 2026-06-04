@@ -26,6 +26,7 @@ Thumbs.db
 .mcp/
 .mcp.json
 mcp.json
+_goalslogs/
 
 # Local config
 gateway.local.toml

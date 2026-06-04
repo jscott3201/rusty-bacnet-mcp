@@ -93,6 +93,74 @@ Advanced:
 Use bacnet://reference/object-types/{type-name} to get detailed info on any type.
 ";
 
+pub const TOOL_GUIDE: &str = "\
+BACnet MCP Tool Guide - compact routing and workflow guide.
+
+Default workflow:
+  1. discover_devices or register_device.
+  2. get_device_capabilities before broad reads on an unknown device.
+  3. enumerate_objects to discover object identifiers and names.
+  4. read_property_multiple for snapshots; read_property for one-off scalar reads.
+  5. Use write tools only after reading state and checking policy/audit posture.
+
+Token-efficient usage:
+  - Prefer read_property_multiple over many read_property calls.
+  - Prefer read_schedule before schedule array reads so you know the target refs.
+  - Prefer get_trend_log_info before read_trend_log so you can choose a bounded range.
+  - Fetch detailed reference resources only when a workflow needs the background.
+
+Tool families:
+  discovery:
+    discover_devices broadcasts WhoIs and fills the device table.
+    register_device adds a known device by instance and IP:port without broadcast.
+    list_known_devices reads the cached table without wire traffic.
+    get_device_info reads common Device object identity fields.
+
+  remote reads:
+    read_property reads one property from one object.
+    read_property_multiple reads many object/property pairs in one RPM request.
+    read_priority_array reads present-value, priority-array, and relinquish-default.
+    enumerate_objects reads Device.object-list and object names.
+    get_device_capabilities reads vendor/protocol/service capability fields.
+
+  alarms and events:
+    get_alarm_summary is the cheap active-alarm triage call.
+    get_event_information returns richer event details and supports paging.
+    acknowledge_alarm is a safety-gated write path; use dry_run first.
+
+  schedules:
+    read_schedule reads scalar metadata and target references.
+    read_schedule_weekly reads the weekly-schedule array.
+    read_schedule_exceptions reads exception-schedule entries.
+    write_schedule_weekly and write_schedule_exceptions replace whole arrays/lists.
+
+  trends:
+    get_trend_log_info reads buffer counters and source metadata.
+    read_trend_log reads a bounded ReadRange window by position, sequence, or time.
+
+  diagnostics:
+    ping_device confirms BACnet APDU reachability, not just IP reachability.
+    probe_bbmd reads BBMD BDT/FDT tables by IP:port.
+
+  local objects:
+    list_local_objects, read_local_property, write_local_property,
+    create_local_object, and delete_local_object operate on the gateway database.
+
+Safety posture:
+  - The gateway is read-only by default.
+  - Remote and local writes flow through the same policy and audit log.
+  - Use dry_run where available to validate and record intent without sending APDUs.
+  - Priorities 1-8 are reserved by the default policy; release overrides with
+    relinquish_at_priority rather than writing a competing lower-priority value.
+  - Review bacnet://audit/recent after any denied, dry-run, or failed write path.
+
+Reference resources:
+  - bacnet://reference/services explains service choice tradeoffs.
+  - bacnet://reference/priority-array explains command priority semantics.
+  - bacnet://reference/errors maps protocol errors to likely next steps.
+  - bacnet://reference/object-types/{type} gives object-specific guidance.
+";
+
 pub const PROPERTIES: &str = "\
 BACnet Properties — Common properties found on most object types.
 
