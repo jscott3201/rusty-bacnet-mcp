@@ -1,10 +1,11 @@
 //! Operator console — ratatui-based TUI for the bacnet-mcp daemon.
 //!
-//! Three tabs: **Configure** (JSON editor + validate + reload), **Observe**
+//! Four tabs: **Configure** (JSON editor + validate + reload), **Observe**
 //! (device table + log tail + transport status), **Operate** (manual WhoIs /
-//! ReadProperty / WriteProperty with confirmation). Uses the same
-//! `GatewayState` that the MCP transports use, so any action taken in the
-//! TUI is reflected to outside MCP clients and vice versa.
+//! ReadProperty / WriteProperty with confirmation), and **Shell** (read-oriented
+//! command REPL). Uses the same `GatewayState` that the MCP transports use, so
+//! any action taken in the TUI is reflected to outside MCP clients and vice
+//! versa.
 
 pub mod app;
 pub mod event;
